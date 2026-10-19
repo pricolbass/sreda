@@ -70,7 +70,7 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	app.publications, err = publication.New(db, app.host, publication.AgentTransport{})
+	app.publications, err = publication.New(db, app.host, publication.ModeTransports{machine.AgentMode: publication.AgentTransport{}, machine.ManualMode: publication.ManualTransport{}})
 	if err != nil {
 		db.Close()
 		return nil, err

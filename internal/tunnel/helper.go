@@ -125,7 +125,7 @@ func (h *Helper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if r.URL.Path != "/peers/apply" && r.URL.Path != "/peers/remove" {
+	if r.URL.Path != "/peers/apply" && r.URL.Path != "/peers/remove" && r.URL.Path != "/peers/observe" {
 		http.NotFound(w, r)
 		return
 	}
@@ -151,6 +151,20 @@ func (h *Helper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := h.initialize(ctx); err != nil {
 		http.Error(w, "network isolation not confirmed", 503)
+		return
+	}
+	if r.URL.Path == "/peers/observe" {
+		handshake, err := h.observe(ctx, peer)
+		if err != nil {
+			http.Error(w, "tunnel contact not confirmed", 503)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var observed int64
+		if !handshake.IsZero() {
+			observed = handshake.Unix()
+		}
+		_ = json.NewEncoder(w).Encode(handshakeResult{Latest: observed})
 		return
 	}
 	var err error

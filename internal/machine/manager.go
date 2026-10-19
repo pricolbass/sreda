@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"sreda/internal/tunnel"
-	"strings"
 	"sync"
 	"time"
 )
@@ -41,22 +40,26 @@ type Actor struct {
 	Admin bool
 }
 type Record struct {
-	ID, OwnerID int64
-	Name, Owner string
-	Enabled     bool
-	Online      bool
-	LastSeen    time.Time
+	ID, OwnerID  int64
+	Name, Owner  string
+	Mode         Mode
+	ContactError string
+	Enabled      bool
+	Online       bool
+	LastSeen     time.Time
 }
 
 // Connection includes credentials for trusted application modules. Never render it.
 type Connection struct {
 	ID, OwnerID                    int64
+	Mode                           Mode
 	PublicKey, Address, ProxyToken string
 	Enabled                        bool
 	LastSeen                       time.Time
 }
 type Enrollment struct {
 	ID        int64
+	Mode      Mode
 	Code      string
 	ExpiresAt time.Time
 }
@@ -67,9 +70,10 @@ type EnrollInput struct {
 }
 
 type Manager struct {
-	mu      sync.Mutex
-	store   *sqliteStore
-	gateway tunnel.Gateway
+	mu       sync.Mutex
+	store    *sqliteStore
+	gateway  tunnel.Gateway
+	contacts sync.Map
 }
 
 func (m *Manager) SetGateway(gateway tunnel.Gateway) { m.gateway = gateway }
@@ -80,23 +84,27 @@ func (m *Manager) GatewayDetails() (tunnel.Details, bool) {
 	return m.gateway.Details(), true
 }
 func (m *Manager) Create(ctx context.Context, actor Actor, name string) (Enrollment, error) {
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 100 {
-		return Enrollment{}, failure(Invalid, "Название: от 1 до 100 байт")
-	}
-	if actor.ID <= 0 {
-		return Enrollment{}, failure(Unauthorized, "Требуется вход")
-	}
-	enrollment := Enrollment{Code: token(), ExpiresAt: time.Now().Add(CodeLifetime)}
-	id, err := m.store.create(ctx, actor.ID, name, hash(enrollment.Code), enrollment.ExpiresAt.Unix(), time.Now().Unix())
-	enrollment.ID = id
-	return enrollment, err
+	return m.CreateWithMode(ctx, actor, name, AgentMode)
 }
 func (m *Manager) List(ctx context.Context, actor Actor) ([]Record, error) {
 	records, err := m.store.list(ctx, actor)
 	now := time.Now()
 	for i := range records {
-		records[i].Online = ContactIsOnline(records[i].Enabled, records[i].LastSeen, now)
+		r := &records[i]
+		if r.Mode == ManualMode && r.Enabled {
+			if observeErr := m.ObserveConnection(ctx, r.ID); observeErr != nil {
+				r.ContactError = "Контакт WireGuard не удалось подтвердить"
+				r.Online = false
+				continue
+			}
+			if conn, readErr := m.store.connection(ctx, r.ID); readErr == nil {
+				r.LastSeen = conn.LastSeen
+				r.Enabled = conn.Enabled
+			} else {
+				return records, readErr
+			}
+		}
+		r.Online = ContactForMode(r.Mode, r.Enabled, r.LastSeen, now)
 	}
 	return records, err
 }
@@ -129,7 +137,7 @@ func (m *Manager) Enroll(ctx context.Context, input EnrollInput) (Connection, er
 	}
 	owner := token()
 	now := time.Now()
-	intent, err := m.store.reserveEnrollment(ctx, input, token(), owner, now.Unix(), now.Add(enrollmentLease).Unix(), pool)
+	intent, err := m.store.reserveEnrollment(ctx, input, enrollmentProxyToken, owner, now.Unix(), now.Add(enrollmentLease).Unix(), pool)
 	if err != nil {
 		return Connection{}, err
 	}
@@ -138,7 +146,7 @@ func (m *Manager) Enroll(ctx context.Context, input EnrollInput) (Connection, er
 			return Connection{}, failure(Unavailable, "Очистка прежней попытки подключения не подтверждена; повторите позже")
 		}
 		now = time.Now()
-		intent, err = m.store.reserveEnrollment(ctx, input, token(), owner, now.Unix(), now.Add(enrollmentLease).Unix(), pool)
+		intent, err = m.store.reserveEnrollment(ctx, input, enrollmentProxyToken, owner, now.Unix(), now.Add(enrollmentLease).Unix(), pool)
 		if err != nil {
 			return Connection{}, err
 		}
@@ -190,6 +198,7 @@ func (m *Manager) SetEnabled(ctx context.Context, id int64, enabled bool) error 
 	if err != nil {
 		return fmt.Errorf("не удалось подтвердить применение сетевых настроек: %w", err)
 	}
+	m.contacts.Delete(id)
 	return m.store.setEnabled(ctx, id, enabled)
 }
 func (m *Manager) Reconcile(ctx context.Context) error {
@@ -266,5 +275,5 @@ func hash(token string) []byte { value := sha256.Sum256([]byte(token)); return v
 
 // ContactIsOnline is the shared control-contact policy; it does not assert application health.
 func ContactIsOnline(enabled bool, lastSeen, now time.Time) bool {
-	return enabled && !lastSeen.IsZero() && now.Sub(lastSeen) < ContactLifetime
+	return ContactForMode(AgentMode, enabled, lastSeen, now)
 }

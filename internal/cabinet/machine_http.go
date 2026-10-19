@@ -19,6 +19,9 @@ func (a *App) registerMachineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /machines", a.machinePage)
 	mux.HandleFunc("POST /machines", a.createMachine)
 	mux.HandleFunc("GET /machines/{id}", a.machineDetail)
+	mux.HandleFunc("GET /machines/{id}/wireguard", a.manualParameters)
+	mux.HandleFunc("GET /machines/{id}/wireguard/template", a.manualTemplateDownload)
+	mux.HandleFunc("POST /machines/{id}/wireguard", a.manualPublicKey)
 	mux.HandleFunc("POST /api/agent/enroll", a.enrollMachine)
 	mux.HandleFunc("POST /api/agent/heartbeat", a.machineHeartbeat)
 }
@@ -26,6 +29,7 @@ func (a *App) registerMachineRoutes(mux *http.ServeMux) {
 type machineView struct {
 	ID                           int64
 	Name, Owner, State, LastSeen string
+	Mode, ContactError           string
 }
 
 func machineActor(user User) machine.Actor {
@@ -65,7 +69,7 @@ func (a *App) machinePage(w http.ResponseWriter, r *http.Request) {
 	}
 	views := []machineView{}
 	for _, record := range records {
-		view := machineView{ID: record.ID, Name: record.Name, Owner: record.Owner, State: "Нет связи", LastSeen: "Ещё не было"}
+		view := machineView{ID: record.ID, Name: record.Name, Owner: record.Owner, State: "Нет связи", LastSeen: "Ещё не было", Mode: string(record.Mode), ContactError: record.ContactError}
 		if !record.LastSeen.IsZero() {
 			view.LastSeen = record.LastSeen.UTC().Format("2006-01-02 15:04:05 UTC")
 			if record.Online {
@@ -93,12 +97,16 @@ func (a *App) createMachine(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	enrollment, err := a.machines.Create(r.Context(), machineActor(user), r.PostForm.Get("name"))
+	enrollment, err := a.machines.CreateWithMode(r.Context(), machineActor(user), r.PostForm.Get("name"), machine.Mode(r.PostForm.Get("mode")))
 	if err != nil {
 		a.machineError(w, err)
 		return
 	}
 	if strings.Contains(r.Header.Get("Accept"), "text/html") {
+		if enrollment.Mode == machine.ManualMode {
+			a.renderManual(w, http.StatusCreated, enrollment.ID, enrollment.Code, machine.ManualParameters{})
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(201)
 		fmt.Fprintf(w, `<!doctype html><html lang="ru"><meta charset="utf-8"><title>Подключить машину</title><h1>Код подключения</h1><p>Действует 15 минут. Передайте только агенту этой машины.</p><code>%s</code><p>В терминале Debian: <code>sreda-agent enroll --origin %s</code> и введите код по запросу. См. инструкцию оператора по установке.</p><a href="/machines">К машинам</a></html>`, template.HTMLEscapeString(enrollment.Code), template.HTMLEscapeString(a.origin))
@@ -170,4 +178,4 @@ func (a *App) machineHeartbeat(w http.ResponseWriter, r *http.Request) {
 	writeMachineJSON(w, 200, control)
 }
 
-const machineTemplate = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Машины — Среда</title><style>body{font:17px system-ui;max-width:850px;margin:40px auto;padding:0 24px;color:#16352b}article{border:1px solid #ccd9cf;padding:20px;border-radius:12px;margin:16px 0}input,button{font:inherit;padding:12px}button{background:#235c43;color:white;border:0;border-radius:8px}</style><a href="/">Кабинет</a><h1>Машины</h1>{{range .Machines}}<article><h2>{{.Name}}</h2><p>Владелец: {{.Owner}}</p><p>{{.State}}</p><p>Последний контакт: {{.LastSeen}}</p></article>{{else}}<p>Добавьте свою машину, чтобы подключить агент.</p>{{end}}<h2>Добавить машину</h2><form method="post" action="/machines"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Название <input name="name" maxlength="100" required></label> <button>Получить код подключения</button></form><p>Поддерживается Debian 12/13 LXC с systemd и доступом к WireGuard. Код действует 15 минут и показывается один раз. Время контакта относится к управляющему соединению агента.</p></html>`
+const machineTemplate = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Машины — Среда</title><style>body{font:17px system-ui;max-width:850px;margin:40px auto;padding:0 24px;color:#16352b}article{border:1px solid #ccd9cf;padding:20px;border-radius:12px;margin:16px 0}input,button{font:inherit;padding:12px}button{background:#235c43;color:white;border:0;border-radius:8px}</style><a href="/">Кабинет</a><h1>Машины</h1>{{range .Machines}}<article><h2>{{.Name}}</h2><p>Владелец: {{.Owner}}</p><p>{{.State}}</p><p>Последний контакт: {{.LastSeen}}</p>{{if .ContactError}}<p role="alert">{{.ContactError}}</p>{{end}}{{if eq .Mode "manual"}}<a href="/machines/{{.ID}}/wireguard">WireGuard</a>{{end}}</article>{{else}}<p>Добавьте свою машину, чтобы подключить агент.</p>{{end}}<h2>Добавить машину</h2><form method="post" action="/machines"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Название <input name="name" maxlength="100" required></label> <label>Подключение <select name="mode"><option value="agent">С агентом</option><option value="manual">Ручной WireGuard</option></select></label> <button>Получить код подключения</button></form><p>Поддерживается Debian 12/13 LXC с systemd и доступом к WireGuard. Код действует 15 минут и показывается один раз. Время контакта относится к управляющему соединению агента.</p></html>`

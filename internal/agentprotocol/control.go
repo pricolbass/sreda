@@ -12,7 +12,7 @@ type Control struct {
 	MachineID  int64          `json:"machine_id"`
 	Address    string         `json:"address"`
 	Tunnel     tunnel.Details `json:"tunnel"`
-	ProxyToken string         `json:"proxy_token"`
+	ProxyToken string         `json:"proxy_token,omitempty"`
 	Generation uint64         `json:"generation"`
 	Routes     []Route        `json:"routes"`
 }
