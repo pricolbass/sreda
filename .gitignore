@@ -23,3 +23,10 @@ go.work.sum
 
 # env file
 .env
+.tools/
+bin/
+.DS_Store
+var/
+*.sqlite3*
+*.pem
+*.key

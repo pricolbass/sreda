@@ -1,0 +1,13 @@
+{
+	auto_https disable_redirects
+	skip_install_trust
+	admin off
+}
+
+https://localhost:8443 {
+	bind 127.0.0.1 ::1
+	tls internal
+	reverse_proxy unix/{$SREDA_SOCKET} {
+		header_up X-Forwarded-Proto https
+	}
+}

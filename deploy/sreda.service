@@ -1,0 +1,29 @@
+[Unit]
+Description=Sreda cabinet
+After=local-fs.target
+
+[Service]
+User=sreda
+Group=sreda-proxy
+EnvironmentFile=/etc/sreda/sreda.env
+ExecStart=/opt/sreda/sreda serve
+Restart=on-failure
+RestartSec=3
+StateDirectory=sreda
+StateDirectoryMode=0700
+RuntimeDirectory=sreda
+RuntimeDirectoryMode=0750
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/sreda /run/sreda
+
+[Install]
+WantedBy=multi-user.target
