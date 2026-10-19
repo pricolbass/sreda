@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"sreda/internal/cabinet"
 	"sreda/internal/tunnel"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -170,5 +175,172 @@ func TestManualContactUsesHandshakeAndDoesNotTrustPersistedTimestampAfterObserva
 	page = b.request("GET", "/machines", nil)
 	if strings.Contains(page.Body.String(), "На связи") || !strings.Contains(page.Body.String(), "Нет связи") {
 		t.Fatalf("stale contact trusted after failed observation: %s", page.Body.String())
+	}
+}
+
+func TestManualHTTPSDeliveryAndExplicitReenableReuseSameConnection(t *testing.T) {
+	app, b, _ := setup(t)
+	app.SetGateway(&observingGateway{latest: time.Now().Add(-130 * time.Second)})
+	if err := app.ConfigurePublicationZone("example.test"); err != nil {
+		t.Fatal(err)
+	}
+	b.login()
+	b.request("GET", "/machines", nil)
+	created := b.request("POST", "/machines", url.Values{"name": {"Manual Debian"}, "mode": {"manual"}})
+	var pending struct {
+		Code string `json:"code"`
+	}
+	json.Unmarshal(created.Body.Bytes(), &pending)
+	r := httptest.NewRequest("POST", origin+"/api/agent/enroll", strings.NewReader(`{"code":"`+pending.Code+`","public_key":"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","credential":"`+strings.Repeat("m", 43)+`"}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	b.handler.ServeHTTP(w, r)
+	if w.Code != 201 {
+		t.Fatal(w.Code)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Sreda-Proxy-Token") != "" || r.Header.Get("X-Sreda-Publication") != "" {
+			t.Error("manual app received internal route credential")
+		}
+		w.Write([]byte("app reached " + r.URL.RequestURI()))
+	}))
+	defer upstream.Close()
+	app.SetPublicationDialer(func(ctx context.Context, network, address string) (net.Conn, error) {
+		if address != "10.203.0.2:8080" {
+			t.Errorf("wrong manual destination %s", address)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+	})
+	var first struct {
+		ID       string `json:"id"`
+		Revision int64  `json:"revision"`
+	}
+	for _, label := range []string{"manual-one", "manual-two"} {
+		b.request("GET", "/publications", nil)
+		created = b.request("POST", "/publications", url.Values{"machine_id": {"1"}, "subdomain": {label}, "target": {"10.203.0.2:8080"}})
+		if created.Code != 201 {
+			t.Fatalf("create %d %s", created.Code, created.Body.String())
+		}
+		if label == "manual-one" {
+			json.Unmarshal(created.Body.Bytes(), &first)
+		}
+	}
+	gateway := httptest.NewTLSServer(app.Handler())
+	defer gateway.Close()
+	get := func(label string) int {
+		request, _ := http.NewRequest("GET", gateway.URL+"/probe?x=1", nil)
+		request.Host = label + ".example.test"
+		request.Header.Set("X-Sreda-Proxy-Token", "forged")
+		response, err := gateway.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		body, _ := io.ReadAll(response.Body)
+		if response.StatusCode == 200 && string(body) != "app reached /probe?x=1" {
+			t.Fatalf("unexpected app response %s", body)
+		}
+		return response.StatusCode
+	}
+	if code := get("manual-one"); code != 200 {
+		t.Fatalf("manual handshake130s considered unavailable: %d", code)
+	}
+	if changed := b.request("POST", "/publications/"+first.ID+"/disable", url.Values{"revision": {strconv.FormatInt(first.Revision, 10)}}); changed.Code != 303 {
+		t.Fatalf("disable %d %s", changed.Code, changed.Body.String())
+	}
+	if code := get("manual-one"); code != 503 {
+		t.Fatalf("disabled manual publication: %d", code)
+	}
+	if code := get("manual-two"); code != 200 {
+		t.Fatalf("unrelated manual publication: %d", code)
+	}
+	details := b.request("GET", "/publications/"+first.ID, nil)
+	json.Unmarshal(details.Body.Bytes(), &first)
+	if changed := b.request("POST", "/publications/"+first.ID+"/enable", url.Values{"revision": {strconv.FormatInt(first.Revision, 10)}}); changed.Code != 303 {
+		t.Fatalf("enable %d %s", changed.Code, changed.Body.String())
+	}
+	if code := get("manual-one"); code != 200 {
+		t.Fatalf("manual enable incorrectly waits for agent ack: %d", code)
+	}
+}
+
+func TestManualBrowserPageUsesUniqueNonceAndLocalKeyFallback(t *testing.T) {
+	app, b, _ := setup(t)
+	app.SetGateway(testGateway{})
+	b.login()
+	b.request("GET", "/machines", nil)
+	values := url.Values{"name": {"Manual browser"}, "mode": {"manual"}, "csrf": {b.csrf}}
+	r := httptest.NewRequest("POST", origin+"/machines", strings.NewReader(values.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", origin)
+	r.Header.Set("Accept", "text/html")
+	for _, cookie := range b.cookies {
+		r.AddCookie(cookie)
+	}
+	page := httptest.NewRecorder()
+	b.handler.ServeHTTP(page, r)
+	if page.Code != 201 {
+		t.Fatalf("browser page %d %s", page.Code, page.Body.String())
+	}
+	match := regexp.MustCompile(`script-src 'nonce-([^']+)'`).FindStringSubmatch(page.Header().Get("Content-Security-Policy"))
+	if len(match) != 2 || !strings.Contains(page.Body.String(), `<script nonce="`+match[1]+`">`) || !strings.Contains(page.Body.String(), "X25519") || !strings.Contains(page.Body.String(), "wg pubkey") {
+		t.Fatal("browser generation or strict nonce/fallback missing")
+	}
+	normal := b.request("GET", "/machines", nil)
+	if strings.Contains(normal.Header().Get("Content-Security-Policy"), "script-src") {
+		t.Fatal("manual script policy leaked to normal cabinet")
+	}
+	code := regexp.MustCompile(`data-code="([^"]+)"`).FindStringSubmatch(page.Body.String())
+	if len(code) != 2 {
+		t.Fatal("manual page has no one-time enrollment")
+	}
+	completed := b.request("POST", "/machines/1/wireguard", url.Values{"code": {code[1]}, "public_key": {"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}})
+	if completed.Code != 201 {
+		t.Fatalf("public-key fallback %d %s", completed.Code, completed.Body.String())
+	}
+	template := b.request("GET", "/machines/1/wireguard/template", nil)
+	if template.Code != 200 || !strings.Contains(template.Body.String(), "PRIVATE_KEY_FROM_LOCAL_FILE") || !strings.Contains(template.Body.String(), "Address = 10.203.0.2/32") || strings.Contains(template.Body.String(), "proxy_token") {
+		t.Fatalf("fallback template %d %s", template.Code, template.Body.String())
+	}
+}
+
+type manualRetryGateway struct {
+	testGateway
+	unavailable bool
+}
+
+func (g *manualRetryGateway) ApplyPeer(context.Context, tunnel.Peer) error {
+	if g.unavailable {
+		return errors.New("apply timeout")
+	}
+	return nil
+}
+func (g *manualRetryGateway) RemovePeer(context.Context, tunnel.Peer) error {
+	if g.unavailable {
+		return errors.New("revocation unavailable")
+	}
+	return nil
+}
+
+func TestManualPublicKeyFallbackCanRetryDurablePendingEnrollment(t *testing.T) {
+	app, b, _ := setup(t)
+	gateway := &manualRetryGateway{unavailable: true}
+	app.SetGateway(gateway)
+	b.login()
+	b.request("GET", "/machines", nil)
+	created := b.request("POST", "/machines", url.Values{"name": {"Manual retry"}, "mode": {"manual"}})
+	var pending struct {
+		Code string `json:"code"`
+	}
+	json.Unmarshal(created.Body.Bytes(), &pending)
+	values := url.Values{"code": {pending.Code}, "public_key": {"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}}
+	first := b.request("POST", "/machines/1/wireguard", values)
+	if first.Code != 503 {
+		t.Fatalf("failed network %d %s", first.Code, first.Body.String())
+	}
+	gateway.unavailable = false
+	retry := b.request("POST", "/machines/1/wireguard", values)
+	if retry.Code != 201 {
+		t.Fatalf("same public-key fallback cannot recover: %d %s", retry.Code, retry.Body.String())
 	}
 }

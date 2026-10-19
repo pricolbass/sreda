@@ -2,6 +2,7 @@ package machine
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"sreda/internal/tunnel"
 	"strings"
@@ -84,7 +85,11 @@ func (m *Manager) EnrollManual(ctx context.Context, actor Actor, id int64, code,
 	if err := m.store.manualCode(ctx, id, hash(code), time.Now().Unix()); err != nil {
 		return ManualParameters{}, err
 	}
-	if _, err := m.Enroll(ctx, EnrollInput{Code: code, PublicKey: publicKey, Credential: token()}); err != nil {
+	// This browser-independent fallback has no agent bearer to persist locally.
+	// Bind retries to the same high-entropy code and public key so an unfinished
+	// durable attempt remains recoverable after helper/cleanup failures.
+	credential := base64.RawURLEncoding.EncodeToString(hash("sreda/manual/enrollment/" + code + "/" + publicKey))
+	if _, err := m.Enroll(ctx, EnrollInput{Code: code, PublicKey: publicKey, Credential: credential}); err != nil {
 		return ManualParameters{}, err
 	}
 	return m.ManualParameters(ctx, actor, id)

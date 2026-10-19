@@ -88,11 +88,12 @@ func (m *Manager) Create(ctx context.Context, actor Actor, name string) (Enrollm
 }
 func (m *Manager) List(ctx context.Context, actor Actor) ([]Record, error) {
 	records, err := m.store.list(ctx, actor)
-	now := time.Now()
+	observeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 	for i := range records {
 		r := &records[i]
 		if r.Mode == ManualMode && r.Enabled {
-			if observeErr := m.ObserveConnection(ctx, r.ID); observeErr != nil {
+			if observeErr := m.ObserveConnection(observeCtx, r.ID); observeErr != nil {
 				r.ContactError = "Контакт WireGuard не удалось подтвердить"
 				r.Online = false
 				continue
@@ -104,7 +105,7 @@ func (m *Manager) List(ctx context.Context, actor Actor) ([]Record, error) {
 				return records, readErr
 			}
 		}
-		r.Online = ContactForMode(r.Mode, r.Enabled, r.LastSeen, now)
+		r.Online = ContactForMode(r.Mode, r.Enabled, r.LastSeen, time.Now())
 	}
 	return records, err
 }

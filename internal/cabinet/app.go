@@ -76,6 +76,7 @@ func Open(dataDir, origin string) (*App, error) {
 		return nil, err
 	}
 	app.machines = machine.New(db)
+	app.publications.SetContactObserver(app.machines)
 	app.agentControl = agentcontrol.New(app.machines, app.publications)
 	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates + recoveryTemplates)
 	if err != nil {
