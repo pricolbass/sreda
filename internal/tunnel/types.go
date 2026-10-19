@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Peer struct {
@@ -27,6 +28,12 @@ type Gateway interface {
 	Details() Details
 	ApplyPeer(context.Context, Peer) error
 	RemovePeer(context.Context, Peer) error
+}
+
+// Observer reports kernel WireGuard handshakes without accepting client claims
+// about contact. Gateway adapters that cannot observe must return an error.
+type Observer interface {
+	LatestHandshake(context.Context, Peer) (time.Time, error)
 }
 
 // Validate rejects configuration that could consume a code but cannot form a tunnel.

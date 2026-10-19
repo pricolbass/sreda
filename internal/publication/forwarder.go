@@ -91,7 +91,7 @@ func (f *forwarder) newRoute(id string, endpoint Endpoint) *publicationRoute {
 		pr.Out.Host = originalHost
 		for header := range pr.Out.Header {
 			lower := strings.ToLower(header)
-			if lower == "forwarded" || strings.HasPrefix(lower, "x-forwarded-") {
+			if lower == "forwarded" || strings.HasPrefix(lower, "x-forwarded-") || lower == "x-sreda-proxy-token" || lower == "x-sreda-publication" {
 				pr.Out.Header.Del(header)
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sreda/internal/agentprotocol"
+	"sreda/internal/machine"
 	"time"
 )
 
@@ -82,9 +83,11 @@ func (s *sqliteStore) view(ctx context.Context, actor Actor) (View, error) {
 // The store controls atomic SQLite transactions. Product policy callbacks are
 // supplied by the module and evaluated against the locked persisted snapshot.
 type machineEligibility struct {
-	ID, OwnerID       int64
-	Login             string
-	Enabled, Enrolled bool
+	ID, OwnerID         int64
+	Login               string
+	Enabled, Enrolled   bool
+	Mode                machine.Mode
+	Address, ProxyToken string
 }
 type creationDecision struct {
 	Publication Publication
@@ -99,7 +102,7 @@ func (s *sqliteStore) schedule(ctx context.Context, input CreateRequest, decide 
 	defer tx.Rollback()
 	var machine machineEligibility
 	var key sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT m.id,m.owner_id,m.enabled,m.public_key,u.login FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=?", input.MachineID).Scan(&machine.ID, &machine.OwnerID, &machine.Enabled, &key, &machine.Login)
+	err = tx.QueryRowContext(ctx, "SELECT m.id,m.owner_id,m.enabled,m.public_key,u.login,m.mode,COALESCE(m.tunnel_address,''),COALESCE(m.proxy_token,'') FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=?", input.MachineID).Scan(&machine.ID, &machine.OwnerID, &machine.Enabled, &key, &machine.Login, &machine.Mode, &machine.Address, &machine.ProxyToken)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Publication{}, false, err
 	}
@@ -238,7 +241,7 @@ func (s *sqliteStore) acknowledge(ctx context.Context, machineID int64, ack Ackn
 func (s *sqliteStore) connection(ctx context.Context, label string) (Connection, error) {
 	var c Connection
 	var last sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.state,p.desired_enabled,m.id,m.enabled,m.tunnel_address,m.proxy_token,m.last_seen,p.target FROM publications p JOIN machines m ON m.id=p.machine_id WHERE p.subdomain=?`, label).Scan(&c.ID, &c.State, &c.Desired, &c.MachineID, &c.Enabled, &c.Address, &c.ProxyToken, &last, &c.Target)
+	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.state,p.desired_enabled,m.id,m.enabled,m.tunnel_address,m.proxy_token,m.last_seen,p.target,m.mode FROM publications p JOIN machines m ON m.id=p.machine_id WHERE p.subdomain=?`, label).Scan(&c.ID, &c.State, &c.Desired, &c.MachineID, &c.Enabled, &c.Address, &c.ProxyToken, &last, &c.Target, &c.Mode)
 	if last.Valid {
 		c.LastSeen = last.Int64
 	}

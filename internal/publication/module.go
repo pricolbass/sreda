@@ -74,7 +74,16 @@ type Module struct {
 	zone, cabinetHost string
 	forwarder         *forwarder
 	transport         Transport
+	contactObserver   ContactObserver
 }
+
+type ContactObserver interface {
+	ObserveConnection(context.Context, int64) error
+}
+
+// SetContactObserver composes the manual handshake observation adapter before
+// requests are served. Its cache is owned by the machine application module.
+func (m *Module) SetContactObserver(observer ContactObserver) { m.contactObserver = observer }
 
 func New(db *sql.DB, cabinetHost string, transport Transport) (*Module, error) {
 	if transport == nil {
@@ -130,9 +139,6 @@ func (m *Module) Create(ctx context.Context, actor Actor, input CreateRequest) (
 	if !subdomainPattern.MatchString(input.Subdomain) || input.Subdomain+"."+m.zone == strings.ToLower(host) {
 		return Publication{}, false, fail(Invalid, "Недопустимый или зарезервированный поддомен")
 	}
-	if err := agentprotocol.ValidateTarget(input.Target); err != nil {
-		return Publication{}, false, fail(Invalid, err.Error())
-	}
 	p, created, err := m.store.schedule(ctx, input, func(machine machineEligibility, existing *Publication) (creationDecision, error) {
 		if machine.ID == 0 || machine.OwnerID != actor.ID {
 			return creationDecision{}, fail(NotFound, "Машина не найдена")
@@ -140,13 +146,21 @@ func (m *Module) Create(ctx context.Context, actor Actor, input CreateRequest) (
 		if !machine.Enabled || !machine.Enrolled {
 			return creationDecision{}, fail(Conflict, "Сначала подключите машину")
 		}
+		endpoint, err := m.transport.Endpoint(Connection{Mode: machine.Mode, Address: machine.Address, ProxyToken: machine.ProxyToken, Target: input.Target})
+		if err != nil {
+			return creationDecision{}, fail(Invalid, err.Error())
+		}
 		if existing != nil {
 			if existing.MachineID == input.MachineID && existing.Target == input.Target {
 				return creationDecision{Publication: *existing, Existing: true}, nil
 			}
 			return creationDecision{}, fail(Conflict, "Поддомен уже занят")
 		}
-		return creationDecision{Publication: Publication{ID: newPublicationID(), MachineID: input.MachineID, Subdomain: input.Subdomain, Target: input.Target, State: "Настраивается", Revision: 1, Owner: machine.Login, OwnerID: machine.OwnerID, DesiredEnabled: true}}, nil
+		state := "Настраивается"
+		if !endpoint.AgentControlled {
+			state = "Настроена"
+		}
+		return creationDecision{Publication: Publication{ID: newPublicationID(), MachineID: input.MachineID, Subdomain: input.Subdomain, Target: input.Target, State: state, Revision: 1, Owner: machine.Login, OwnerID: machine.OwnerID, DesiredEnabled: true}}, nil
 	})
 	m.decorate(&p, actor)
 	return p, created, err
