@@ -22,7 +22,10 @@ func installMachineSchema(tx *sql.Tx) error {
  phase TEXT NOT NULL CHECK(phase IN ('applying','cleanup')),
  lease_owner TEXT NOT NULL,lease_until INTEGER NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0
  );`)
-	return err
+	if err != nil {
+		return err
+	}
+	return machine.InstallDeletionSchema(tx)
 }
 
 // MachineConnection is trusted application metadata; it is never rendered.

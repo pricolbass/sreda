@@ -41,11 +41,13 @@ type Actor struct {
 	Admin bool
 }
 type Record struct {
-	ID, OwnerID int64
-	Name, Owner string
-	Enabled     bool
-	Online      bool
-	LastSeen    time.Time
+	ID, OwnerID     int64
+	Name, Owner     string
+	Enabled         bool
+	Online          bool
+	DeletionPending bool
+	DeleteError     string
+	LastSeen        time.Time
 }
 
 // Connection includes credentials for trusted application modules. Never render it.
@@ -168,30 +170,6 @@ func (m *Manager) AuthenticateAgent(ctx context.Context, credential string) (Con
 func (m *Manager) ObserveContact(ctx context.Context, id int64) error {
 	return m.store.observe(ctx, id, time.Now().Unix())
 }
-func (m *Manager) SetEnabled(ctx context.Context, id int64, enabled bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	conn, err := m.store.connection(ctx, id)
-	if err != nil {
-		return err
-	}
-	if conn.PublicKey == "" {
-		return failure(Invalid, "машина ещё не подключена")
-	}
-	if m.gateway == nil {
-		return failure(Unavailable, "сетевой шлюз не настроен")
-	}
-	peer := tunnel.Peer{MachineID: conn.ID, PublicKey: conn.PublicKey, Address: conn.Address}
-	if enabled {
-		err = m.gateway.ApplyPeer(ctx, peer)
-	} else {
-		err = m.gateway.RemovePeer(ctx, peer)
-	}
-	if err != nil {
-		return fmt.Errorf("не удалось подтвердить применение сетевых настроек: %w", err)
-	}
-	return m.store.setEnabled(ctx, id, enabled)
-}
 func (m *Manager) Reconcile(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -213,13 +191,19 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			failures = append(failures, err)
 		}
 	}
+	if err := m.reconcileConnectionOperations(ctx); err != nil {
+		failures = append(failures, err)
+	}
+	if err := m.reconcileDeletions(ctx); err != nil {
+		failures = append(failures, err)
+	}
 	peers, err := m.store.enabledPeers(ctx)
 	if err != nil {
 		return errors.Join(append(failures, err)...)
 	}
 	for _, peer := range peers {
-		if err := m.gateway.ApplyPeer(ctx, peer); err != nil {
-			failures = append(failures, failure(Unavailable, "сетевой helper не подтвердил восстановление подключений"))
+		if err := m.changeConnection(ctx, peer.MachineID, true, true); err != nil {
+			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)

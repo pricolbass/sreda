@@ -13,14 +13,14 @@ type sqliteStore struct{ db *sql.DB }
 // New composes the local SQLite adapter. Schema installation belongs to application startup.
 func New(db *sql.DB) *Manager { return &Manager{store: &sqliteStore{db: db}} }
 func (s *sqliteStore) create(ctx context.Context, ownerID int64, name string, code []byte, expiry, created int64) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO machines(owner_id,name,code_hash,code_expires_at,created_at) VALUES(?,?,?,?,?)`, ownerID, name, code, expiry, created)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO machines(id,owner_id,name,code_hash,code_expires_at,created_at) VALUES((SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM machines UNION ALL SELECT id FROM machine_tombstones)),?,?,?,?,?)`, ownerID, name, code, expiry, created)
 	if err != nil {
 		return 0, err
 	}
 	return result.LastInsertId()
 }
 func (s *sqliteStore) list(ctx context.Context, actor Actor) ([]Record, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.owner_id,m.name,u.login,m.enabled,m.last_seen FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.owner_id=? OR ? ORDER BY m.id`, actor.ID, actor.Admin)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.owner_id,m.name,u.login,m.enabled,m.last_seen,EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id),COALESCE((SELECT error FROM machine_deletions d WHERE d.machine_id=m.id),'') FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.owner_id=? OR ? ORDER BY m.id`, actor.ID, actor.Admin)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +29,7 @@ func (s *sqliteStore) list(ctx context.Context, actor Actor) ([]Record, error) {
 	for rows.Next() {
 		var r Record
 		var last sql.NullInt64
-		if err = rows.Scan(&r.ID, &r.OwnerID, &r.Name, &r.Owner, &r.Enabled, &last); err != nil {
+		if err = rows.Scan(&r.ID, &r.OwnerID, &r.Name, &r.Owner, &r.Enabled, &last, &r.DeletionPending, &r.DeleteError); err != nil {
 			return nil, err
 		}
 		if last.Valid {
