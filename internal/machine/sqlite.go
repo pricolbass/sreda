@@ -128,3 +128,9 @@ func (t *enrollmentTx) save(ctx context.Context, c Connection, credential []byte
 	_, err := t.tx.ExecContext(ctx, `UPDATE machines SET code_hash=NULL,code_expires_at=NULL,credential_hash=?,public_key=?,tunnel_address=?,proxy_token=?,enabled=1 WHERE id=?`, credential, c.PublicKey, c.Address, c.ProxyToken, c.ID)
 	return err
 }
+
+func (t *enrollmentTx) keyInUse(ctx context.Context, key string) (bool, error) {
+	var count int
+	err := t.tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM machines WHERE public_key=?", key).Scan(&count)
+	return count > 0, err
+}

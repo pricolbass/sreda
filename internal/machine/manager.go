@@ -44,6 +44,7 @@ type Record struct {
 	ID, OwnerID int64
 	Name, Owner string
 	Enabled     bool
+	Online      bool
 	LastSeen    time.Time
 }
 
@@ -92,7 +93,12 @@ func (m *Manager) Create(ctx context.Context, actor Actor, name string) (Enrollm
 	return enrollment, err
 }
 func (m *Manager) List(ctx context.Context, actor Actor) ([]Record, error) {
-	return m.store.list(ctx, actor)
+	records, err := m.store.list(ctx, actor)
+	now := time.Now()
+	for i := range records {
+		records[i].Online = ContactIsOnline(records[i].Enabled, records[i].LastSeen, now)
+	}
+	return records, err
 }
 func (m *Manager) Find(ctx context.Context, actor Actor, id int64) (Record, error) {
 	return m.store.find(ctx, actor, id)
@@ -124,6 +130,13 @@ func (m *Manager) Enroll(ctx context.Context, input EnrollInput) (Connection, er
 	conn, err := tx.pending(ctx, hash(input.Code), time.Now().Unix())
 	if err != nil {
 		return Connection{}, err
+	}
+	keyInUse, err := tx.keyInUse(ctx, input.PublicKey)
+	if err != nil {
+		return Connection{}, err
+	}
+	if keyInUse {
+		return Connection{}, failure(Invalid, "Этот публичный ключ уже закреплён за другой машиной")
 	}
 	used, err := tx.addresses(ctx)
 	if err != nil {
@@ -211,3 +224,8 @@ func token() string {
 	return base64.RawURLEncoding.EncodeToString(value[:])
 }
 func hash(token string) []byte { value := sha256.Sum256([]byte(token)); return value[:] }
+
+// ContactIsOnline is the shared control-contact policy; it does not assert application health.
+func ContactIsOnline(enabled bool, lastSeen, now time.Time) bool {
+	return enabled && !lastSeen.IsZero() && now.Sub(lastSeen) < ContactLifetime
+}
