@@ -14,8 +14,8 @@ import (
 )
 
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	if len(args) == 0 || (args[0] != "create-admin" && args[0] != "serve") {
-		return errors.New("использование: sreda <create-admin|serve> --data-dir DIR [--origin https://HOST]")
+	if len(args) == 0 || (args[0] != "create-admin" && args[0] != "reset-admin" && args[0] != "serve") {
+		return errors.New("использование: sreda <create-admin|reset-admin|serve> --data-dir DIR [--origin https://HOST]")
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -67,6 +67,13 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer app.Close()
+	if args[0] == "reset-admin" {
+		if err := app.ResetAdministratorPassword(strings.TrimSpace(*login), password); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "Пароль администратора изменён. Прежние сессии отозваны.")
+		return nil
+	}
 	if err := app.CreateAdministrator(strings.TrimSpace(*login), password); err != nil {
 		return err
 	}
