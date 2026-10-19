@@ -154,9 +154,6 @@ func writeMachineJSON(w http.ResponseWriter, status int, value any) {
 type AgentRoute = agentprotocol.Route
 type AgentControl = agentprotocol.Control
 
-func (a *App) controlFor(m MachineConnection) AgentControl {
-	return AgentControl{MachineID: m.ID, Address: m.Address, Tunnel: a.machines.gateway.Details(), ProxyToken: m.ProxyToken, Routes: []AgentRoute{}}
-}
 func validPublicKey(key string) bool {
 	raw, err := base64.StdEncoding.DecodeString(key)
 	if err != nil || len(raw) != 32 || len(key) != 44 {
@@ -252,11 +249,19 @@ func (a *App) enrollMachine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Не удалось сохранить подключение", 500)
 		return
 	}
-	writeMachineJSON(w, 201, a.controlFor(m))
+	control, err := a.controlFor(m)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeMachineJSON(w, 201, control)
 }
 func (a *App) machineHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Ready bool `json:"ready"`
+		Ready             bool   `json:"ready"`
+		AppliedGeneration uint64 `json:"applied_generation"`
+		FailedGeneration  uint64 `json:"failed_generation"`
+		ApplyError        string `json:"apply_error"`
 	}
 	if !readMachineJSON(w, r, &input) {
 		return
@@ -282,7 +287,20 @@ func (a *App) machineHeartbeat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeMachineJSON(w, 200, a.controlFor(m))
+	a.publications.mu.Lock()
+	defer a.publications.mu.Unlock()
+	if input.Ready {
+		if err := a.recordAgentAcknowledgment(r.Context(), m.ID, input.AppliedGeneration, input.FailedGeneration, input.ApplyError); err != nil {
+			http.Error(w, "Не удалось подтвердить версию маршрутов", 409)
+			return
+		}
+	}
+	control, err := a.controlFor(m)
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	writeMachineJSON(w, 200, control)
 }
 
 const machineTemplate = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Машины — Среда</title><style>body{font:17px system-ui;max-width:850px;margin:40px auto;padding:0 24px;color:#16352b}article{border:1px solid #ccd9cf;padding:20px;border-radius:12px;margin:16px 0}input,button{font:inherit;padding:12px}button{background:#235c43;color:white;border:0;border-radius:8px}</style><a href="/">Кабинет</a><h1>Машины</h1>{{range .Machines}}<article><h2>{{.Name}}</h2><p>Владелец: {{.Owner}}</p><p>{{.State}}</p><p>Последний контакт: {{.LastSeen}}</p></article>{{else}}<p>Добавьте свою машину, чтобы подключить агент.</p>{{end}}<h2>Добавить машину</h2><form method="post" action="/machines"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Название <input name="name" maxlength="100" required></label> <button>Получить код подключения</button></form><p>Поддерживается Debian 12/13 LXC с systemd и доступом к WireGuard. Код действует 15 минут и показывается один раз. Время контакта относится к управляющему соединению агента.</p></html>`

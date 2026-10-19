@@ -33,10 +33,11 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /login", a.loginPage)
 	mux.HandleFunc("POST /login", a.login)
 	mux.HandleFunc("POST /logout", a.logout)
+	a.registerPublicationRoutes(mux)
 	a.registerMachineRoutes(mux)
 	a.registerInvitationRoutes(mux)
 	a.registerPasswordRecoveryRoutes(mux)
-	return a.protect(mux)
+	return a.publicationDispatcher(a.protect(mux))
 }
 
 func (a *App) protect(next http.Handler) http.Handler {

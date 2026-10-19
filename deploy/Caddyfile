@@ -3,7 +3,7 @@
 	admin unix//run/caddy-admin/admin.sock
 }
 
-https://{$SREDA_HOST} {
+https://{$SREDA_HOST}, https://*.{$SREDA_ZONE} {
 	tls /etc/caddy/sreda/fullchain.pem /etc/caddy/sreda/privkey.pem
 	reverse_proxy unix//run/sreda/http.sock {
 		header_up X-Forwarded-Proto https

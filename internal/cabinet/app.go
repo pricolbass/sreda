@@ -2,6 +2,7 @@
 package cabinet
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -21,11 +23,12 @@ const passwordCost = 12
 var loginPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,63}$`)
 
 type App struct {
-	db       *sql.DB
-	origin   string
-	host     string
-	pages    *template.Template
-	machines machineRuntime
+	db           *sql.DB
+	origin       string
+	host         string
+	pages        *template.Template
+	machines     machineRuntime
+	publications publicationRuntime
 }
 
 // Open creates the state directory and schema on first use. The origin is saved
@@ -121,6 +124,9 @@ func (a *App) initialize(origin string) error {
 		return err
 	}
 
+	if err := installPublicationSchema(tx); err != nil {
+		return err
+	}
 	var saved string
 	err = tx.QueryRow("SELECT value FROM settings WHERE key = 'origin'").Scan(&saved)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -144,10 +150,22 @@ func (a *App) initialize(origin string) error {
 		return err
 	}
 	a.origin, a.host = origin, u.Host
+	if err := a.db.QueryRow("SELECT value FROM settings WHERE key='publication_zone'").Scan(&a.publications.zone); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	return nil
 }
 
-func (a *App) Close() error { return a.db.Close() }
+func (a *App) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	a.publications.mu.Lock()
+	for id := range a.publications.routes {
+		_ = a.closePublicationLocked(ctx, id)
+	}
+	a.publications.mu.Unlock()
+	return a.db.Close()
+}
 
 // CreateAdministrator is available only to the local CLI, never over HTTP.
 func (a *App) CreateAdministrator(login, password string) error {
