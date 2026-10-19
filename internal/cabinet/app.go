@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sreda/internal/agentcontrol"
+	"sreda/internal/machine"
 	"sreda/internal/publication"
 	"strings"
 	"time"
@@ -28,7 +30,8 @@ type App struct {
 	origin       string
 	host         string
 	pages        *template.Template
-	machines     machineRuntime
+	machines     *machine.Manager
+	agentControl *agentcontrol.Controller
 	publications *publication.Module
 }
 
@@ -74,6 +77,8 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	app.machines = machine.New(db)
+	app.agentControl = agentcontrol.New(app.machines, app.publications)
 	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates + recoveryTemplates)
 	if err != nil {
 		db.Close()

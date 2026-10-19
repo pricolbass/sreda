@@ -13,7 +13,7 @@ command -v ip >/dev/null
 [ "$#" = 1 ] || { echo 'Использование: install.sh /путь/к/linux-бинарнику/sreda-agent' >&2; exit 1; }
 [ -f "$1" ] && [ -x "$1" ] || { echo 'Бинарник агента не найден или не исполним.' >&2; exit 1; }
 # Probe kernel WireGuard plus the namespace capability without contacting the gateway.
-check_name="sreda-check-$$"
+check_name="srchk$$"
 ip link add dev "$check_name" type wireguard || { echo 'WireGuard недоступен: проверьте модуль на Proxmox-хосте и CAP_NET_ADMIN в LXC. Установка не завершена.' >&2; exit 1; }
 trap 'ip link del dev "$check_name" 2>/dev/null || true' EXIT HUP INT TERM
 ip link del dev "$check_name"

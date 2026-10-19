@@ -156,6 +156,37 @@ func TestPublishedHTTPSRequestReachesRegisteredApplicationWithoutCabinetLimits(t
 	if result.Header.Get("Content-Security-Policy") != "" || len(result.Cookies()) != 0 {
 		t.Fatal("cabinet policies/cookies leaked into application")
 	}
+	secondApplication := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"application":"second-api"}`))
+	}))
+	defer secondApplication.Close()
+	secondCreated := b.request("POST", "/publications", url.Values{"machine_id": {"1"}, "subdomain": {"api"}, "target": {strings.TrimPrefix(secondApplication.URL, "http://")}})
+	if secondCreated.Code != 201 {
+		t.Fatalf("second app create: %d %s", secondCreated.Code, secondCreated.Body.String())
+	}
+	snapshot := agentContact(t, b, credential, `{"ready":true,"applied_generation":1}`)
+	if err := json.Unmarshal(snapshot.Body.Bytes(), &control); err != nil {
+		t.Fatal(err)
+	}
+	if control.Generation != 2 || len(control.Routes) != 2 {
+		t.Fatal("second application did not reuse machine map")
+	}
+	if err := proxy.ApplyControl(control); err != nil {
+		t.Fatal(err)
+	}
+	agentContact(t, b, credential, `{"ready":true,"applied_generation":2}`)
+	apiRequest, _ := http.NewRequest("GET", gateway.URL+"/v1/items", nil)
+	apiRequest.Host = "api.example.test"
+	apiResponse, err := gateway.Client().Do(apiRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiBody, _ := io.ReadAll(apiResponse.Body)
+	apiResponse.Body.Close()
+	if apiResponse.StatusCode != 200 || string(apiBody) != `{"application":"second-api"}` {
+		t.Fatalf("second API request %d %s", apiResponse.StatusCode, apiBody)
+	}
 	t.Run("CaddyWildcardHTTPS", func(t *testing.T) {
 		client, address := caddyClient(t, app.Handler())
 		req, _ := http.NewRequest("POST", address+"/through-caddy", strings.NewReader("caddy-body"))
