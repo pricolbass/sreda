@@ -6,9 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"regexp"
 	"sync"
@@ -72,8 +70,6 @@ type Invitation struct {
 // or migrations, which remain the application's composition responsibilities.
 type Manager struct{ store sqliteStore }
 
-func New(db *sql.DB) *Manager { return &Manager{store: sqliteStore{db: db}} }
-
 func token() string {
 	var raw [32]byte
 	_, _ = rand.Read(raw[:])
@@ -122,10 +118,10 @@ func (m *Manager) ResetAdministratorPassword(ctx context.Context, login, passwor
 }
 func (m *Manager) SignIn(ctx context.Context, login, password, oldSession string) (string, error) {
 	id, hash, err := m.store.credentials(ctx, login)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		return "", err
 	}
-	if errors.Is(err, sql.ErrNoRows) {
+	if id == 0 {
 		hash = dummyPasswordHash()
 	}
 	if bcrypt.CompareHashAndPassword(hash, []byte(password)) != nil || id == 0 || len(password) > 72 {
@@ -142,11 +138,7 @@ func (m *Manager) CurrentUser(ctx context.Context, session string) (User, error)
 	if session == "" {
 		return User{}, Unauthenticated
 	}
-	user, err := m.store.sessionUser(ctx, session, time.Now().Unix())
-	if errors.Is(err, sql.ErrNoRows) {
-		return User{}, Unauthenticated
-	}
-	return user, err
+	return m.store.sessionUser(ctx, session, time.Now().Unix())
 }
 func (m *Manager) Administrator(ctx context.Context, session string) (User, error) {
 	user, err := m.CurrentUser(ctx, session)
@@ -166,9 +158,6 @@ func (m *Manager) SignOut(ctx context.Context, session string) error {
 }
 func (m *Manager) administratorID(ctx context.Context, id int64) error {
 	role, err := m.store.userRole(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Forbidden
-	}
 	if err != nil {
 		return err
 	}
@@ -222,8 +211,8 @@ func (m *Manager) CancelInvitation(ctx context.Context, actorID, id int64) error
 }
 func (m *Manager) Invitation(ctx context.Context, token string) (time.Time, error) {
 	expiry, err := m.store.invitationExpiry(ctx, token, time.Now().Unix())
-	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, InvitationInactive
+	if err != nil {
+		return time.Time{}, err
 	}
 	return time.Unix(expiry, 0), err
 }
@@ -256,8 +245,8 @@ func (m *Manager) IssueRecovery(ctx context.Context, actorID, userID int64) (Lin
 }
 func (m *Manager) Recovery(ctx context.Context, token string) (time.Time, error) {
 	expiry, err := m.store.recoveryExpiry(ctx, token, time.Now().Unix())
-	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, RecoveryInactive
+	if err != nil {
+		return time.Time{}, err
 	}
 	return time.Unix(expiry, 0), err
 }
