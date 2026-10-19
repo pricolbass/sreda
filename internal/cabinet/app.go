@@ -1,4 +1,4 @@
-// Package cabinet owns the first administrator's account and server-side sessions.
+// Package cabinet owns accounts, invitations, and server-side sessions.
 package cabinet
 
 import (
@@ -64,7 +64,7 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	app.pages, err = template.New("pages").Parse(pageTemplates)
+	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -82,7 +82,7 @@ func (a *App) initialize(origin string) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
+	if version > 2 {
 		return errors.New("версия базы новее приложения")
 	}
 	if version == 0 {
@@ -103,6 +103,11 @@ func (a *App) initialize(origin string) error {
 			PRAGMA user_version = 1;
 		`)
 		if err != nil {
+			return err
+		}
+	}
+	if version < 2 {
+		if err := migrateInvitations(tx); err != nil {
 			return err
 		}
 	}
