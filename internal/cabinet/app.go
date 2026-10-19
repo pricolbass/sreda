@@ -1,4 +1,4 @@
-// Package cabinet owns the first administrator's account and server-side sessions.
+// Package cabinet owns accounts, invitations, and server-side sessions.
 package cabinet
 
 import (
@@ -52,6 +52,7 @@ func Open(dataDir, origin string) (*App, error) {
 	dsn := url.URL{Scheme: "file", Path: path}
 	q := dsn.Query()
 	q.Add("_pragma", "foreign_keys(1)")
+	q.Add("_txlock", "immediate")
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "journal_mode(WAL)")
 	dsn.RawQuery = q.Encode()
@@ -65,7 +66,7 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	app.pages, err = template.New("pages").Parse(pageTemplates)
+	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -83,7 +84,7 @@ func (a *App) initialize(origin string) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
+	if version > 2 {
 		return errors.New("версия базы новее приложения")
 	}
 	if version == 0 {
@@ -107,9 +108,15 @@ func (a *App) initialize(origin string) error {
 			return err
 		}
 	}
+	if version < 2 {
+		if err := migrateInvitations(tx); err != nil {
+			return err
+		}
+	}
 	if err := installMachineSchema(tx); err != nil {
 		return err
 	}
+
 	var saved string
 	err = tx.QueryRow("SELECT value FROM settings WHERE key = 'origin'").Scan(&saved)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {

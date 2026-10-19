@@ -17,27 +17,6 @@ import (
 	"time"
 )
 
-type machineUser struct {
-	ID          int64
-	Login, Role string
-}
-
-func (a *App) machineOwner(w http.ResponseWriter, r *http.Request) (machineUser, bool) {
-	var u machineUser
-	cookie, err := r.Cookie(sessionCookie)
-	if err == nil {
-		err = a.db.QueryRowContext(r.Context(), `SELECT users.id,users.login,users.role FROM sessions JOIN users ON users.id=sessions.user_id WHERE token_hash=? AND expires_at>?`, tokenHash(cookie.Value), time.Now().Unix()).Scan(&u.ID, &u.Login, &u.Role)
-	}
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, http.ErrNoCookie) {
-			http.Redirect(w, r, "/login", 303)
-		} else {
-			a.serverError(w, err)
-		}
-		return u, false
-	}
-	return u, true
-}
 func (a *App) registerMachineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /machines", a.machinePage)
 	mux.HandleFunc("POST /machines", a.createMachine)
@@ -52,7 +31,7 @@ type machineView struct {
 }
 
 func (a *App) machinePage(w http.ResponseWriter, r *http.Request) {
-	u, ok := a.machineOwner(w, r)
+	u, ok := a.currentUser(w, r)
 	if !ok {
 		return
 	}
@@ -100,7 +79,7 @@ func (a *App) machinePage(w http.ResponseWriter, r *http.Request) {
 	w.Write(body.Bytes())
 }
 func (a *App) createMachine(w http.ResponseWriter, r *http.Request) {
-	u, ok := a.machineOwner(w, r)
+	u, ok := a.currentUser(w, r)
 	if !ok {
 		return
 	}
@@ -127,7 +106,7 @@ func (a *App) createMachine(w http.ResponseWriter, r *http.Request) {
 	writeMachineJSON(w, 201, map[string]any{"id": id, "code": code, "expires_at": expires})
 }
 func (a *App) machineDetail(w http.ResponseWriter, r *http.Request) {
-	u, ok := a.machineOwner(w, r)
+	u, ok := a.currentUser(w, r)
 	if !ok {
 		return
 	}
@@ -204,6 +183,10 @@ func (a *App) enrollMachine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Сетевой шлюз не настроен; код сохранён", 503)
 		return
 	}
+	if err := a.machines.gateway.Details().Validate(); err != nil {
+		http.Error(w, "Сетевой шлюз настроен некорректно; код сохранён", 503)
+		return
+	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		a.serverError(w, err)
@@ -220,12 +203,39 @@ func (a *App) enrollMachine(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, err)
 		return
 	}
-	if m.ID > 100 {
-		http.Error(w, "Исчерпан пул адресов", 503)
+	rows, err := tx.QueryContext(r.Context(), "SELECT tunnel_address FROM machines WHERE tunnel_address IS NOT NULL")
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	used := map[string]bool{}
+	for rows.Next() {
+		var address string
+		if err = rows.Scan(&address); err != nil {
+			rows.Close()
+			a.serverError(w, err)
+			return
+		}
+		used[address] = true
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		a.serverError(w, err)
+		return
+	}
+	for address := 2; address <= 101; address++ {
+		candidate := fmt.Sprintf("10.203.0.%d/32", address)
+		if !used[candidate] {
+			m.Address = candidate
+			break
+		}
+	}
+	if m.Address == "" {
+		http.Error(w, "Исчерпан пул из 100 подключений", 503)
 		return
 	}
 	m.PublicKey = input.PublicKey
-	m.Address = fmt.Sprintf("10.203.0.%d/32", m.ID+1)
 	m.ProxyToken = randomToken()
 	m.Enabled = true
 	peer := tunnel.Peer{MachineID: m.ID, PublicKey: m.PublicKey, Address: m.Address}

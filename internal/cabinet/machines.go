@@ -78,3 +78,37 @@ func (a *App) SetMachineEnabled(ctx context.Context, id int64, enabled bool) err
 	_, err = a.db.ExecContext(ctx, "UPDATE machines SET enabled=? WHERE id=?", enabled, id)
 	return err
 }
+
+// ReconcileMachinePeers restores only explicitly enabled peers after a helper restart.
+// Failures are returned to the caller; they never change the desired enabled state.
+func (a *App) ReconcileMachinePeers(ctx context.Context) error {
+	a.machines.mu.Lock()
+	defer a.machines.mu.Unlock()
+	if a.machines.gateway == nil {
+		return errors.New("сетевой шлюз не настроен")
+	}
+	rows, err := a.db.QueryContext(ctx, "SELECT id,public_key,tunnel_address FROM machines WHERE enabled=1 AND public_key IS NOT NULL")
+	if err != nil {
+		return err
+	}
+	peers := []tunnel.Peer{}
+	for rows.Next() {
+		var p tunnel.Peer
+		if err := rows.Scan(&p.MachineID, &p.PublicKey, &p.Address); err != nil {
+			rows.Close()
+			return err
+		}
+		peers = append(peers, p)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, p := range peers {
+		if err := a.machines.gateway.ApplyPeer(ctx, p); err != nil {
+			return errors.New("сетевой helper не подтвердил восстановление подключений")
+		}
+	}
+	return nil
+}

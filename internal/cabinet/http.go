@@ -34,6 +34,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /login", a.login)
 	mux.HandleFunc("POST /logout", a.logout)
 	a.registerMachineRoutes(mux)
+	a.registerInvitationRoutes(mux)
 	return a.protect(mux)
 }
 
@@ -60,7 +61,6 @@ func (a *App) protect(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			r.Body = http.MaxBytesReader(w, r.Body, 4096)
 			if err := r.ParseForm(); err != nil {
 				http.Error(w, "Некорректная форма", http.StatusBadRequest)
 				return
@@ -90,7 +90,7 @@ func setCookie(w http.ResponseWriter, name, value string, maxAge int) {
 func (a *App) render(w http.ResponseWriter, status int, page, login, message string) {
 	token := randomToken()
 	var body bytes.Buffer
-	data := struct{ CSRF, Login, Error string }{token, login, message}
+	data := pageData{CSRF: token, Login: login, Error: message, Role: "admin"}
 	if err := a.pages.ExecuteTemplate(&body, page, data); err != nil {
 		a.serverError(w, err)
 		return
@@ -151,23 +151,47 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(sessionCookie)
-	if err != nil {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	user, ok := a.currentUser(w, r)
+	if !ok {
 		return
 	}
-	var login string
-	err = a.db.QueryRowContext(r.Context(), `SELECT users.login FROM sessions JOIN users ON users.id = sessions.user_id
-		WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.role = 'admin'`, tokenHash(cookie.Value), time.Now().Unix()).Scan(&login)
-	if errors.Is(err, sql.ErrNoRows) {
+	a.renderPage(w, http.StatusOK, "dashboard", pageData{Login: user.Login, Role: user.Role})
+}
+
+// User identifies the account authorized by the current server-side session.
+type User struct {
+	ID          int64
+	Login, Role string
+}
+
+func (a *App) currentUser(w http.ResponseWriter, r *http.Request) (User, bool) {
+	var user User
+	cookie, err := r.Cookie(sessionCookie)
+	if err == nil {
+		err = a.db.QueryRowContext(r.Context(), `SELECT users.id, users.login, users.role FROM sessions JOIN users ON users.id = sessions.user_id
+   WHERE sessions.token_hash = ? AND sessions.expires_at > ?`, tokenHash(cookie.Value), time.Now().Unix()).Scan(&user.ID, &user.Login, &user.Role)
+	}
+	if errors.Is(err, http.ErrNoCookie) || errors.Is(err, sql.ErrNoRows) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
+		return User{}, false
 	}
 	if err != nil {
 		a.serverError(w, err)
-		return
+		return User{}, false
 	}
-	a.render(w, http.StatusOK, "dashboard", login, "")
+	return user, true
+}
+
+func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request) (User, bool) {
+	user, ok := a.currentUser(w, r)
+	if !ok {
+		return User{}, false
+	}
+	if user.Role != "admin" {
+		http.Error(w, "Требуются права администратора", http.StatusForbidden)
+		return User{}, false
+	}
+	return user, true
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {

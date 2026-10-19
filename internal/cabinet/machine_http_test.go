@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sreda/internal/cabinet"
 	"sreda/internal/tunnel"
 	"strings"
 	"sync"
@@ -15,13 +16,19 @@ import (
 type testGateway struct{}
 
 func (testGateway) Details() tunnel.Details {
-	return tunnel.Details{GatewayPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", Endpoint: "gateway.example.test:51820", GatewayAddress: "10.203.0.1/32"}
+	return tunnel.Details{GatewayPublicKey: "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", Endpoint: "gateway.example.test:51820", GatewayAddress: "10.203.0.1/32"}
 }
 func (testGateway) ApplyPeer(context.Context, tunnel.Peer) error  { return nil }
 func (testGateway) RemovePeer(context.Context, tunnel.Peer) error { return nil }
 
 func TestMachineEnrollmentIsSingleUseAndControlCredentialIsPrivate(t *testing.T) {
-	app, b, _ := setup(t)
+	app, b, dir := setup(t)
+	second, err := cabinet.Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	second.SetGateway(testGateway{})
 	app.SetGateway(testGateway{}) // external adapter fixture: this is not a WireGuard acceptance test.
 	b.login()
 	b.request("GET", "/machines", nil)
@@ -39,14 +46,15 @@ func TestMachineEnrollmentIsSingleUseAndControlCredentialIsPrivate(t *testing.T)
 	payload := `{"code":"` + invitation.Code + `","public_key":"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","credential":"` + strings.Repeat("c", 43) + `"}`
 	codes := make(chan int, 2)
 	var wg sync.WaitGroup
-	for range 2 {
+	for i := range 2 {
+		handler := []http.Handler{b.handler, second.Handler()}[i]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			r := httptest.NewRequest("POST", origin+"/api/agent/enroll", strings.NewReader(payload))
 			r.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
-			b.handler.ServeHTTP(w, r)
+			handler.ServeHTTP(w, r)
 			codes <- w.Code
 		}()
 	}
@@ -104,5 +112,43 @@ func TestNetworkFailurePreservesCodeAndDoesNotClaimContact(t *testing.T) {
 	listing := b.request("GET", "/machines", nil)
 	if strings.Contains(listing.Body.String(), "На связи") || !strings.Contains(listing.Body.String(), "Ещё не было") {
 		t.Fatalf("enrollment claimed contact: %s", listing.Body.String())
+	}
+}
+
+func TestMachineOwnershipIncludesDirectIdentifierAccess(t *testing.T) {
+	_, admin, _ := setup(t)
+	admin.login()
+	newUser := func(login string) *browser {
+		link := invitation(t, admin, "24h")
+		person := visitor(t, admin)
+		if code := accept(t, person, link, login); code != 303 {
+			t.Fatal(code)
+		}
+		person.request("GET", "/login", nil)
+		if w := person.request("POST", "/login", url.Values{"login": {login}, "password": {password}}); w.Code != 303 {
+			t.Fatal(w.Code)
+		}
+		return person
+	}
+	alice := newUser("alice")
+	bob := newUser("bob")
+	alice.request("GET", "/machines", nil)
+	if w := alice.request("POST", "/machines", url.Values{"name": {"Alice private machine"}}); w.Code != 201 {
+		t.Fatalf("create: %d", w.Code)
+	}
+	if w := bob.request("GET", "/machines", nil); strings.Contains(w.Body.String(), "Alice private machine") {
+		t.Fatal("foreign machine visible in list")
+	}
+	if w := bob.request("GET", "/machines/1", nil); w.Code != 404 {
+		t.Fatalf("foreign ID accessible: %d", w.Code)
+	}
+	if w := alice.request("GET", "/machines/1", nil); w.Code != 200 {
+		t.Fatalf("owner ID inaccessible: %d", w.Code)
+	}
+	if w := admin.request("GET", "/machines", nil); !strings.Contains(w.Body.String(), "Alice private machine") || !strings.Contains(w.Body.String(), "alice") {
+		t.Fatal("administrator cannot inspect owner")
+	}
+	if w := visitor(t, admin).request("GET", "/machines/1", nil); w.Code != 303 {
+		t.Fatalf("anonymous ID accessible: %d", w.Code)
 	}
 }
