@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sreda/internal/agentcontrol"
+	"sreda/internal/machine"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -21,11 +23,12 @@ const passwordCost = 12
 var loginPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,63}$`)
 
 type App struct {
-	db       *sql.DB
-	origin   string
-	host     string
-	pages    *template.Template
-	machines machineRuntime
+	db           *sql.DB
+	origin       string
+	host         string
+	pages        *template.Template
+	machines     *machine.Manager
+	agentControl *agentcontrol.Controller
 }
 
 // Open creates the state directory and schema on first use. The origin is saved
@@ -65,6 +68,8 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	app.machines = machine.New(db)
+	app.agentControl = agentcontrol.New(app.machines, nil)
 	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates + recoveryTemplates)
 	if err != nil {
 		db.Close()
