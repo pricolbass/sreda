@@ -10,6 +10,10 @@ import (
 // invariants across concurrent application instances. It is not a public seam.
 type sqliteStore struct{ db *sql.DB }
 
+// New composes the SQLite implementation without exposing storage semantics
+// to account application operations. The caller owns schema and DB lifetime.
+func New(db *sql.DB) *Manager { return &Manager{store: sqliteStore{db: db}} }
+
 func (s sqliteStore) createAdministrator(ctx context.Context, login string, hash []byte) (bool, error) {
 	result, err := s.db.ExecContext(ctx, `INSERT INTO users(login,password_hash,role) VALUES(?,?,'admin') ON CONFLICT(login) DO NOTHING`, login, hash)
 	if err != nil {
@@ -22,6 +26,9 @@ func (s sqliteStore) credentials(ctx context.Context, login string) (int64, []by
 	var id int64
 	var hash []byte
 	err := s.db.QueryRowContext(ctx, `SELECT id,password_hash FROM users WHERE login=?`, login).Scan(&id, &hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil, nil
+	}
 	return id, hash, err
 }
 func (s sqliteStore) rotateSession(ctx context.Context, id int64, hash []byte, old, next string, now, expiry int64) error {
@@ -56,11 +63,17 @@ func (s sqliteStore) rotateSession(ctx context.Context, id int64, hash []byte, o
 func (s sqliteStore) sessionUser(ctx context.Context, token string, now int64) (User, error) {
 	var user User
 	err := s.db.QueryRowContext(ctx, `SELECT users.id,users.login,users.role FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?`, tokenHash(token), now).Scan(&user.ID, &user.Login, &user.Role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, Unauthenticated
+	}
 	return user, err
 }
 func (s sqliteStore) userRole(ctx context.Context, id int64) (string, error) {
 	var role string
 	err := s.db.QueryRowContext(ctx, `SELECT role FROM users WHERE id=?`, id).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
 	return role, err
 }
 func (s sqliteStore) deleteSession(ctx context.Context, token string) error {
@@ -135,6 +148,9 @@ func (s sqliteStore) cancelInvitation(ctx context.Context, id, now int64) error 
 func (s sqliteStore) invitationExpiry(ctx context.Context, token string, now int64) (int64, error) {
 	var expiry int64
 	err := s.db.QueryRowContext(ctx, `SELECT expires_at FROM invitations WHERE token_hash=? AND expires_at>? AND used_at IS NULL AND cancelled_at IS NULL`, tokenHash(token), now).Scan(&expiry)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, InvitationInactive
+	}
 	return expiry, err
 }
 func (s sqliteStore) acceptInvitation(ctx context.Context, token, login string, hash []byte, now int64) error {
@@ -202,6 +218,9 @@ func (s sqliteStore) issueRecovery(ctx context.Context, userID int64, token stri
 func (s sqliteStore) recoveryExpiry(ctx context.Context, token string, now int64) (int64, error) {
 	var expiry int64
 	err := s.db.QueryRowContext(ctx, `SELECT expires_at FROM password_recovery JOIN users ON users.id=password_recovery.user_id WHERE token_hash=? AND expires_at>? AND used_at IS NULL AND role='user'`, tokenHash(token), now).Scan(&expiry)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, RecoveryInactive
+	}
 	return expiry, err
 }
 func (s sqliteStore) applyRecovery(ctx context.Context, token string, hash []byte, now int64) error {
