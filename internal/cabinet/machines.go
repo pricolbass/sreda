@@ -3,24 +3,9 @@ package cabinet
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"fmt"
+	"sreda/internal/machine"
 	"sreda/internal/tunnel"
-	"sync"
-	"time"
 )
-
-const connectionCodeLifetime = 15 * time.Minute
-const machineContactLifetime = 90 * time.Second
-
-type machineRuntime struct {
-	mu      sync.Mutex
-	gateway tunnel.Gateway
-}
-
-// SetGateway attaches the privileged network boundary. A nil gateway denies enrollment.
-// Configure it before serving requests.
-func (a *App) SetGateway(gateway tunnel.Gateway) { a.machines.gateway = gateway }
 
 func installMachineSchema(tx *sql.Tx) error {
 	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS machines (
@@ -33,82 +18,14 @@ func installMachineSchema(tx *sql.Tx) error {
 	return err
 }
 
-// MachineConnection is available to trusted gateway routing code, never browser responses.
-// ProxyToken authenticates gateway-to-agent traffic and must not be logged.
-type MachineConnection struct {
-	ID, OwnerID                    int64
-	PublicKey, Address, ProxyToken string
-	Enabled                        bool
-	LastSeen                       time.Time
-}
+// MachineConnection is trusted application metadata; it is never rendered.
+type MachineConnection = machine.Connection
 
+func (a *App) SetGateway(gateway tunnel.Gateway) { a.machines.SetGateway(gateway) }
 func (a *App) MachineConnection(ctx context.Context, id int64) (MachineConnection, error) {
-	var m MachineConnection
-	var last sql.NullInt64
-	err := a.db.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),COALESCE(proxy_token,''),enabled,last_seen FROM machines WHERE id=?`, id).Scan(&m.ID, &m.OwnerID, &m.PublicKey, &m.Address, &m.ProxyToken, &m.Enabled, &last)
-	if last.Valid {
-		m.LastSeen = time.Unix(last.Int64, 0)
-	}
-	return m, err
+	return a.machines.Connection(ctx, id)
 }
-
-// SetMachineEnabled revokes the peer before acknowledging disable; enable must be explicit.
 func (a *App) SetMachineEnabled(ctx context.Context, id int64, enabled bool) error {
-	a.machines.mu.Lock()
-	defer a.machines.mu.Unlock()
-	m, err := a.MachineConnection(ctx, id)
-	if err != nil {
-		return err
-	}
-	if m.PublicKey == "" {
-		return errors.New("машина ещё не подключена")
-	}
-	if a.machines.gateway == nil {
-		return errors.New("сетевой шлюз не настроен")
-	}
-	peer := tunnel.Peer{MachineID: m.ID, PublicKey: m.PublicKey, Address: m.Address}
-	if enabled {
-		err = a.machines.gateway.ApplyPeer(ctx, peer)
-	} else {
-		err = a.machines.gateway.RemovePeer(ctx, peer)
-	}
-	if err != nil {
-		return fmt.Errorf("не удалось подтвердить применение сетевых настроек: %w", err)
-	}
-	_, err = a.db.ExecContext(ctx, "UPDATE machines SET enabled=? WHERE id=?", enabled, id)
-	return err
+	return a.machines.SetEnabled(ctx, id, enabled)
 }
-
-// ReconcileMachinePeers restores only explicitly enabled peers after a helper restart.
-// Failures are returned to the caller; they never change the desired enabled state.
-func (a *App) ReconcileMachinePeers(ctx context.Context) error {
-	a.machines.mu.Lock()
-	defer a.machines.mu.Unlock()
-	if a.machines.gateway == nil {
-		return errors.New("сетевой шлюз не настроен")
-	}
-	rows, err := a.db.QueryContext(ctx, "SELECT id,public_key,tunnel_address FROM machines WHERE enabled=1 AND public_key IS NOT NULL")
-	if err != nil {
-		return err
-	}
-	peers := []tunnel.Peer{}
-	for rows.Next() {
-		var p tunnel.Peer
-		if err := rows.Scan(&p.MachineID, &p.PublicKey, &p.Address); err != nil {
-			rows.Close()
-			return err
-		}
-		peers = append(peers, p)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
-	}
-	for _, p := range peers {
-		if err := a.machines.gateway.ApplyPeer(ctx, p); err != nil {
-			return errors.New("сетевой helper не подтвердил восстановление подключений")
-		}
-	}
-	return nil
-}
+func (a *App) ReconcileMachinePeers(ctx context.Context) error { return a.machines.Reconcile(ctx) }
