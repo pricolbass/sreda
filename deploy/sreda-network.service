@@ -4,6 +4,8 @@ After=network-pre.target nftables.service
 Before=wg-quick@wg-sreda.service sreda.service
 
 [Service]
+Type=notify
+NotifyAccess=main
 User=root
 Group=sreda-network
 ExecStart=/opt/sreda/sreda-network
