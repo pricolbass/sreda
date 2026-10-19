@@ -34,18 +34,22 @@ func (CommandRunner) Run(ctx context.Context, name string, args []string, input 
 	return string(output), nil
 }
 
-type HelperConfig struct{ Interface, WG, NFT string }
+type HelperConfig struct{ Interface, WG, NFT, IP string }
 type Helper struct {
 	config      HelperConfig
 	runner      Runner
 	mu          sync.Mutex
 	initialized bool
+	policy      string
 }
 
 var interfaceName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,15}$`)
 
 func NewHelper(config HelperConfig, runner Runner) (*Helper, error) {
-	if !interfaceName.MatchString(config.Interface) || !filepath.IsAbs(config.WG) || !filepath.IsAbs(config.NFT) || runner == nil {
+	if config.IP == "" {
+		config.IP = "/usr/sbin/ip"
+	}
+	if !interfaceName.MatchString(config.Interface) || !filepath.IsAbs(config.WG) || !filepath.IsAbs(config.NFT) || !filepath.IsAbs(config.IP) || runner == nil {
 		return nil, errors.New("invalid network helper configuration")
 	}
 	return &Helper{config: config, runner: runner}, nil
@@ -86,6 +90,11 @@ func (h *Helper) initialize(ctx context.Context) error {
 	if _, err := h.runner.Run(ctx, h.config.NFT, []string{"-f", "-"}, rules); err != nil {
 		return errors.New("network isolation not confirmed")
 	}
+	policy, err := h.readPolicy(ctx)
+	if err != nil {
+		return errors.New("network isolation not confirmed")
+	}
+	h.policy = policy
 	h.initialized = true
 	return nil
 }
@@ -96,12 +105,15 @@ func validatePeer(peer Peer) error {
 		return errors.New("invalid public key")
 	}
 	// One /32 per machine. Never allow a client to claim the gateway or a subnet.
-	if peer.MachineID < 1 || peer.MachineID > 100 {
-		return errors.New("machine limit reached")
+	if peer.MachineID < 1 {
+		return errors.New("invalid machine")
 	}
-	expected := fmt.Sprintf("10.203.0.%d/32", peer.MachineID+1)
 	prefix, err := netip.ParsePrefix(peer.Address)
-	if err != nil || prefix.String() != expected {
+	if err != nil || prefix.String() != peer.Address || !prefix.Addr().Is4() || prefix.Bits() != 32 {
+		return errors.New("invalid client address")
+	}
+	address := prefix.Addr().As4()
+	if address[0] != 10 || address[1] != 203 || address[2] != 0 || address[3] < 2 || address[3] > 101 {
 		return errors.New("invalid client address")
 	}
 	return nil
@@ -231,6 +243,12 @@ func (h *Helper) peerAddress(ctx context.Context, key string) (string, error) {
 	return "", nil
 }
 func (h *Helper) apply(ctx context.Context, peer Peer) error {
+	if err := h.checkRoute(ctx, peer); err != nil {
+		return err
+	}
+	if err := h.checkPolicy(ctx); err != nil {
+		return err
+	}
 	// A repeated apply must not steal an address from a different public key.
 	out, err := h.runner.Run(ctx, h.config.WG, []string{"show", h.config.Interface, "allowed-ips"}, "")
 	if err != nil {
@@ -245,6 +263,9 @@ func (h *Helper) apply(ctx context.Context, peer Peer) error {
 	saved, err := h.peerAddress(ctx, peer.PublicKey)
 	if err != nil {
 		return err
+	}
+	if saved != "" && saved != peer.Address {
+		return errors.New("public key already assigned")
 	}
 	allowed, err := h.hasClient(ctx, peer)
 	if err != nil {
@@ -263,7 +284,116 @@ func (h *Helper) apply(ctx context.Context, peer Peer) error {
 	if err != nil || saved != peer.Address {
 		return errors.New("peer application not confirmed")
 	}
-	return h.setClient(ctx, peer, true)
+	if err := h.setClient(ctx, peer, true); err != nil {
+		h.denyAfterError(peer)
+		return err
+	}
+	if err := h.checkPolicy(ctx); err != nil {
+		h.denyAfterError(peer)
+		return err
+	}
+	return nil
+}
+
+// A failed readback after opening must not leave an unconfirmed client open.
+// The caller's context can already be cancelled, so cleanup has its own bound.
+func (h *Helper) denyAfterError(peer Peer) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = h.setClient(ctx, peer, false)
+	_, _ = h.runner.Run(ctx, h.config.WG, []string{"set", h.config.Interface, "peer", peer.PublicKey, "remove"}, "")
+}
+
+func (h *Helper) checkPolicy(ctx context.Context) error {
+	policy, err := h.readPolicy(ctx)
+	if err != nil || policy != h.policy {
+		return errors.New("network isolation not confirmed")
+	}
+	return nil
+}
+
+// Capture the complete installed table after our atomic installation and reject
+// subsequent drift, including missing rules, changed hooks or added accepts.
+// Kernel handles and the intentionally mutable client elements are excluded.
+func (h *Helper) readPolicy(ctx context.Context) (string, error) {
+	out, err := h.runner.Run(ctx, h.config.NFT, []string{"-j", "list", "table", "inet", "sreda"}, "")
+	if err != nil {
+		return "", err
+	}
+	var doc struct {
+		NFTables []map[string]map[string]any `json:"nftables"`
+	}
+	if json.Unmarshal([]byte(out), &doc) != nil {
+		return "", errors.New("invalid firewall state")
+	}
+	chains := map[string]bool{}
+	rules := map[string]int{}
+	tables, sets := 0, 0
+	objects := []map[string]map[string]any{}
+	for _, item := range doc.NFTables {
+		if len(item) != 1 {
+			return "", errors.New("invalid firewall object")
+		}
+		for kind, object := range item {
+			if kind == "metainfo" {
+				continue
+			}
+			if object["family"] != "inet" {
+				return "", errors.New("invalid firewall family")
+			}
+			delete(object, "handle")
+			switch kind {
+			case "table":
+				if object["name"] != "sreda" {
+					return "", errors.New("invalid firewall table")
+				}
+				tables++
+			case "set":
+				if object["table"] != "sreda" || object["name"] != "clients" || object["type"] != "ipv4_addr" {
+					return "", errors.New("invalid firewall set")
+				}
+				delete(object, "elem")
+				sets++
+			case "chain":
+				name, _ := object["name"].(string)
+				if (name != "input" && name != "forward" && name != "output") || chains[name] || object["table"] != "sreda" || object["type"] != "filter" || object["hook"] != name || object["prio"] != float64(-10) || object["policy"] != "accept" {
+					return "", errors.New("invalid firewall chain")
+				}
+				chains[name] = true
+			case "rule":
+				name, _ := object["chain"].(string)
+				if object["table"] != "sreda" || (name != "input" && name != "forward" && name != "output") {
+					return "", errors.New("invalid firewall rule")
+				}
+				rules[name]++
+			default:
+				return "", errors.New("unexpected firewall object")
+			}
+			objects = append(objects, item)
+		}
+	}
+	if tables != 1 || sets != 1 || len(chains) != 3 || rules["input"] != 2 || rules["forward"] != 2 || rules["output"] != 2 {
+		return "", errors.New("firewall isolation incomplete")
+	}
+	encoded, err := json.Marshal(objects)
+	return string(encoded), err
+}
+func (h *Helper) checkRoute(ctx context.Context, peer Peer) error {
+	address := strings.TrimSuffix(peer.Address, "/32")
+	out, err := h.runner.Run(ctx, h.config.IP, []string{"-4", "-j", "route", "get", address}, "")
+	if err != nil {
+		return err
+	}
+	var routes []struct {
+		Device  string          `json:"dev"`
+		Gateway string          `json:"gateway"`
+		Type    string          `json:"type"`
+		Via     json.RawMessage `json:"via"`
+	}
+	if json.Unmarshal([]byte(out), &routes) != nil || len(routes) != 1 || routes[0].Device != h.config.Interface || routes[0].Gateway != "" || len(routes[0].Via) != 0 || (routes[0].Type != "" && routes[0].Type != "unicast") {
+		return errors.New("direct WireGuard route not confirmed")
+	}
+	return nil
 }
 func (h *Helper) remove(ctx context.Context, peer Peer) error {
 	// Deny return packets first, including previously established connections.
@@ -271,7 +401,7 @@ func (h *Helper) remove(ctx context.Context, peer Peer) error {
 	firewallErr := h.setClient(ctx, peer, false)
 	_, removeErr := h.runner.Run(ctx, h.config.WG, []string{"set", h.config.Interface, "peer", peer.PublicKey, "remove"}, "")
 	saved, verifyErr := h.peerAddress(ctx, peer.PublicKey)
-	if firewallErr != nil || removeErr != nil || verifyErr != nil || saved != "" {
+	if firewallErr != nil || removeErr != nil || verifyErr != nil || saved != "" || h.checkPolicy(ctx) != nil {
 		return errors.New("peer revocation not confirmed")
 	}
 	return nil

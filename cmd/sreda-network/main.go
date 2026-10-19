@@ -24,6 +24,7 @@ func run() error {
 	iface := flags.String("interface", "wg-sreda", "managed WireGuard interface")
 	wg := flags.String("wg", "/usr/bin/wg", "root-owned wg executable")
 	nft := flags.String("nft", "/usr/sbin/nft", "root-owned nft executable")
+	ip := flags.String("ip", "/usr/sbin/ip", "root-owned ip executable")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -33,18 +34,12 @@ func run() error {
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return errors.New("network helper requires Linux and root")
 	}
-	helper, err := tunnel.NewHelper(tunnel.HelperConfig{Interface: *iface, WG: *wg, NFT: *nft}, tunnel.CommandRunner{})
+	helper, err := tunnel.NewHelper(tunnel.HelperConfig{Interface: *iface, WG: *wg, NFT: *nft, IP: *ip}, tunnel.CommandRunner{})
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	err = helper.Initialize(initCtx)
-	cancel()
-	if err != nil {
-		return err
-	}
 	if info, err := os.Lstat(*socket); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
 			return errors.New("socket path occupied")
@@ -70,6 +65,25 @@ func run() error {
 	defer listener.Close()
 	if err := os.Chmod(*socket, 0660); err != nil {
 		return err
+	}
+	// Own the control socket before touching kernel state: a duplicate launch
+	// must not clear the active helper's client set.
+	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err = helper.Initialize(initCtx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if address := os.Getenv("NOTIFY_SOCKET"); address != "" {
+		conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: address, Net: "unixgram"})
+		if err != nil {
+			return errors.New("service readiness not confirmed")
+		}
+		_, err = conn.Write([]byte("READY=1"))
+		conn.Close()
+		if err != nil {
+			return errors.New("service readiness not confirmed")
+		}
 	}
 	server := &http.Server{Handler: helper, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 4096}
 	go func() { <-ctx.Done(); server.Close() }()
