@@ -1,26 +1,24 @@
-// Package cabinet owns accounts, invitations, and server-side sessions.
+// Package cabinet composes application modules and their HTTP adapters.
 package cabinet
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"errors"
-	"fmt"
 	"html/template"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+
+	"sreda/internal/identity"
 
 	_ "modernc.org/sqlite"
 )
 
-const passwordCost = 12
-
-var loginPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,63}$`)
-
 type App struct {
+	identity *identity.Manager
 	db       *sql.DB
 	origin   string
 	host     string
@@ -60,7 +58,7 @@ func Open(dataDir, origin string) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	app := &App{db: db}
+	app := &App{db: db, identity: identity.New(db)}
 	if err := app.initialize(origin); err != nil {
 		db.Close()
 		return nil, err
@@ -151,25 +149,12 @@ func (a *App) Close() error { return a.db.Close() }
 
 // CreateAdministrator is available only to the local CLI, never over HTTP.
 func (a *App) CreateAdministrator(login, password string) error {
-	if !loginPattern.MatchString(login) {
-		return errors.New("логин: 3–64 символа, латинские буквы, цифры, _, . или -; первый символ — буква или цифра")
-	}
-	hash, err := accountPasswordHash(password)
-	if err != nil {
-		return err
-	}
-	result, err := a.db.Exec("INSERT INTO users (login, password_hash, role) VALUES (?, ?, 'admin') ON CONFLICT(login) DO NOTHING", login, hash)
-	if err != nil {
-		return fmt.Errorf("создание администратора: %w", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		return errors.New("логин уже занят; существующая учётная запись не изменена")
-	}
-	return nil
+	return a.identity.CreateAdministrator(context.Background(), login, password)
+}
+
+// ResetAdministratorPassword is available only to the local operator CLI.
+func (a *App) ResetAdministratorPassword(login, password string) error {
+	return a.identity.ResetAdministratorPassword(context.Background(), login, password)
 }
 
 func tokenHash(token string) []byte {
