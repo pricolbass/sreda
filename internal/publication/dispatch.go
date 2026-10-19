@@ -3,7 +3,6 @@ package publication
 import (
 	"net"
 	"net/http"
-	"sreda/internal/machine"
 	"strings"
 	"time"
 )
@@ -35,40 +34,16 @@ func (m *Module) Wrap(cabinet http.Handler) http.Handler {
 			http.Error(w, "Требуется HTTPS", 403)
 			return
 		}
-		m.mu.Lock()
-		connection, err := m.store.connection(r.Context(), label)
+		admitted, err := m.resolveAndAdmit(r.Context(), label, func() { _ = http.NewResponseController(w).SetWriteDeadline(time.Now()) })
 		if err != nil {
-			m.mu.Unlock()
-			if domainErr, ok := err.(*Error); ok && domainErr.Kind == NotFound {
+			if domainError, ok := err.(*Error); ok && domainError.Kind == NotFound {
 				http.NotFound(w, r)
 			} else {
 				http.Error(w, "Сервис временно недоступен", 503)
 			}
 			return
 		}
-		if !connection.Desired || connection.State != "Настроена" || !machine.ContactIsOnline(connection.Enabled, time.Unix(connection.LastSeen, 0), time.Now()) {
-			m.mu.Unlock()
-			http.Error(w, "Сервис временно недоступен", 503)
-			return
-		}
-		endpoint, err := m.transport.Endpoint(connection)
-		if err != nil {
-			m.mu.Unlock()
-			http.Error(w, "Сервис временно недоступен", 503)
-			return
-		}
-		route := m.forwarder.routes[connection.ID]
-		if route == nil {
-			route = m.forwarder.newRoute(connection.ID, endpoint)
-			m.forwarder.routes[connection.ID] = route
-		}
-		ctx, release, ok := route.admit(r.Context(), w)
-		m.mu.Unlock()
-		if !ok {
-			http.Error(w, "Сервис временно недоступен", 503)
-			return
-		}
-		defer release()
-		route.proxy.ServeHTTP(w, r.WithContext(ctx))
+		defer admitted.release()
+		admitted.route.proxy.ServeHTTP(w, r.WithContext(admitted.ctx))
 	})
 }

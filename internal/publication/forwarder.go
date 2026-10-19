@@ -115,7 +115,7 @@ type publicationAdmission struct {
 	abort  func()
 }
 
-func (r *publicationRoute) admit(ctx context.Context, w http.ResponseWriter) (context.Context, func(), bool) {
+func (r *publicationRoute) admit(ctx context.Context, abort func()) (context.Context, func(), bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -124,7 +124,7 @@ func (r *publicationRoute) admit(ctx context.Context, w http.ResponseWriter) (co
 	ctx, cancel := context.WithCancel(ctx)
 	r.next++
 	id := r.next
-	r.requests[id] = publicationAdmission{cancel: cancel, abort: func() { _ = http.NewResponseController(w).SetWriteDeadline(time.Now()) }}
+	r.requests[id] = publicationAdmission{cancel: cancel, abort: abort}
 	return ctx, func() {
 		cancel()
 		r.mu.Lock()
@@ -136,6 +136,10 @@ func (r *publicationRoute) admit(ctx context.Context, w http.ResponseWriter) (co
 		r.mu.Unlock()
 	}, true
 }
+
+// stopAdmission is quick and runs under the module lifecycle lock; draining is outside it.
+func (r *publicationRoute) stopAdmission() { r.mu.Lock(); r.closed = true; r.mu.Unlock() }
+
 func (r *publicationRoute) closeAndWait(ctx context.Context) error {
 	r.mu.Lock()
 	r.closed = true

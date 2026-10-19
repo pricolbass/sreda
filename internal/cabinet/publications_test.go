@@ -344,6 +344,21 @@ func TestPublicationOwnershipCoversMachineAndPublicationIdentifiers(t *testing.T
 	if w := admin.request("GET", "/publications", nil); !strings.Contains(w.Body.String(), "aliceapp") || !strings.Contains(w.Body.String(), "alice") {
 		t.Fatal("admin cannot inspect publication owner")
 	}
+	for _, action := range []string{"disable", "enable"} {
+		if response := bob.request("POST", "/publications/"+p.ID+"/"+action, url.Values{"revision": {"1"}}); response.Code != 404 {
+			t.Fatalf("foreign %s: %d", action, response.Code)
+		}
+	}
+	if response := admin.request("POST", "/publications/"+p.ID+"/enable", url.Values{"revision": {"1"}}); response.Code != 404 {
+		t.Fatalf("admin enabled another owner's publication: %d", response.Code)
+	}
+	if response := admin.request("POST", "/publications/"+p.ID+"/disable", url.Values{"revision": {"1"}}); response.Code != 303 {
+		t.Fatalf("admin disable: %d %s", response.Code, response.Body.String())
+	}
+	if response := alice.request("POST", "/publications/"+p.ID+"/enable", url.Values{"revision": {"2"}}); response.Code != 303 {
+		t.Fatalf("owner enable: %d %s", response.Code, response.Body.String())
+	}
+
 }
 
 func TestUnknownAgentGenerationIsConflict(t *testing.T) {

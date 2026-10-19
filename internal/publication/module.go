@@ -21,15 +21,20 @@ type Actor struct {
 	Admin bool
 }
 type Publication struct {
-	ID        string `json:"id"`
-	MachineID int64  `json:"machine_id"`
-	Subdomain string `json:"subdomain"`
-	Target    string `json:"target"`
-	URL       string `json:"url"`
-	State     string `json:"state"`
-	Error     string `json:"error"`
-	Revision  int64  `json:"revision"`
-	Owner     string `json:"owner"`
+	ID             string `json:"id"`
+	MachineID      int64  `json:"machine_id"`
+	Subdomain      string `json:"subdomain"`
+	Target         string `json:"target"`
+	URL            string `json:"url"`
+	State          string `json:"state"`
+	Error          string `json:"error"`
+	Revision       int64  `json:"revision"`
+	Owner          string `json:"owner"`
+	OwnerID        int64  `json:"-"`
+	DesiredEnabled bool   `json:"enabled"`
+	CanEnable      bool   `json:"can_enable"`
+	CanDisable     bool   `json:"can_disable"`
+	CanRetry       bool   `json:"can_retry"`
 }
 type Machine struct {
 	ID   int64
@@ -142,26 +147,24 @@ func (m *Module) Create(ctx context.Context, actor Actor, input CreateRequest) (
 			}
 			return creationDecision{}, fail(Conflict, "Поддомен уже занят")
 		}
-		state := "Настраивается"
-		if !endpoint.AgentControlled {
-			state = "Настроена"
-		}
-		return creationDecision{Publication: Publication{ID: newPublicationID(), MachineID: input.MachineID, Subdomain: input.Subdomain, Target: input.Target, State: state, Revision: 1, Owner: machine.Login}}, nil
+state := "Настраивается"
+        if !endpoint.AgentControlled { state="Настроена" }
+        return creationDecision{Publication:Publication{ID:newPublicationID(),MachineID:input.MachineID,Subdomain:input.Subdomain,Target:input.Target,State:state,Revision:1,Owner:machine.Login,OwnerID:machine.OwnerID,DesiredEnabled:true}},nil
 	})
-	p.URL = m.url(p.Subdomain)
+	m.decorate(&p, actor)
 	return p, created, err
 }
 func (m *Module) View(ctx context.Context, actor Actor) (View, error) {
 	view, err := m.store.view(ctx, actor)
 	view.Zone = m.zone
 	for i := range view.Publications {
-		view.Publications[i].URL = m.url(view.Publications[i].Subdomain)
+		m.decorate(&view.Publications[i], actor)
 	}
 	return view, err
 }
 func (m *Module) Get(ctx context.Context, actor Actor, id string) (Publication, error) {
 	p, err := m.store.get(ctx, actor, id)
-	p.URL = m.url(p.Subdomain)
+	m.decorate(&p, actor)
 	return p, err
 }
 func (m *Module) Retry(ctx context.Context, actor Actor, id string) error {
@@ -213,4 +216,11 @@ func newPublicationID() string {
 	var raw [32]byte
 	_, _ = rand.Read(raw[:])
 	return base64.RawURLEncoding.EncodeToString(raw[:])
+}
+
+func (m *Module) decorate(p *Publication, actor Actor) {
+	p.URL = m.url(p.Subdomain)
+	p.CanDisable = (p.OwnerID == actor.ID || actor.Admin) && p.State != "Отключена"
+	p.CanEnable = p.OwnerID == actor.ID && p.State == "Отключена"
+	p.CanRetry = p.OwnerID == actor.ID && p.DesiredEnabled && p.State == "Ошибка"
 }
