@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 // Rebuilding users also rebuilds its foreign-key dependent sessions. Copying
@@ -173,11 +171,11 @@ func (a *App) invitationAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	login, password := r.PostForm.Get("login"), r.PostForm.Get("password")
-	if !loginPattern.MatchString(login) || len(password) < 12 || len(password) > 72 {
+	if !loginPattern.MatchString(login) || validateAccountPassword(password) != nil {
 		a.renderPage(w, http.StatusBadRequest, "invitation", pageData{Token: r.PathValue("token"), Error: "Логин: 3–64 латинских символа, цифры, _, . или -; первый символ — буква или цифра. Пароль: 12–72 байта."})
 		return
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), passwordCost)
+	hash, err := accountPasswordHash(password)
 	if err != nil {
 		a.serverError(w, err)
 		return
