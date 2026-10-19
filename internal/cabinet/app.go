@@ -3,6 +3,7 @@ package cabinet
 
 import (
 	"context"
+
 	"database/sql"
 	"errors"
 	"html/template"
@@ -11,10 +12,12 @@ import (
 	"path/filepath"
 
 	"strings"
+	"time"
 
 	"sreda/internal/agentcontrol"
 	"sreda/internal/identity"
 	"sreda/internal/machine"
+	"sreda/internal/publication"
 
 	_ "modernc.org/sqlite"
 )
@@ -27,6 +30,7 @@ type App struct {
 	pages        *template.Template
 	machines     *machine.Manager
 	agentControl *agentcontrol.Controller
+	publications *publication.Module
 }
 
 // Open creates the state directory and schema on first use. The origin is saved
@@ -66,8 +70,13 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	app.publications, err = publication.New(db, app.host, publication.AgentTransport{})
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	app.machines = machine.New(db)
-	app.agentControl = agentcontrol.New(app.machines, nil)
+	app.agentControl = agentcontrol.New(app.machines, app.publications)
 	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates + recoveryTemplates)
 	if err != nil {
 		db.Close()
@@ -124,6 +133,9 @@ func (a *App) initialize(origin string) error {
 		return err
 	}
 
+	if err := publication.InstallSchema(tx); err != nil {
+		return err
+	}
 	var saved string
 	err = tx.QueryRow("SELECT value FROM settings WHERE key = 'origin'").Scan(&saved)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -150,7 +162,15 @@ func (a *App) initialize(origin string) error {
 	return nil
 }
 
-func (a *App) Close() error { return a.db.Close() }
+func (a *App) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var closeError error
+	if a.publications != nil {
+		closeError = a.publications.Close(ctx)
+	}
+	return errors.Join(closeError, a.db.Close())
+}
 
 // CreateAdministrator is available only to the local CLI, never over HTTP.
 func (a *App) CreateAdministrator(login, password string) error {

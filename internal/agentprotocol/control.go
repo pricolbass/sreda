@@ -16,3 +16,10 @@ type Control struct {
 	Generation uint64         `json:"generation"`
 	Routes     []Route        `json:"routes"`
 }
+
+// Acknowledgment reports only the snapshot actually applied by the machine.
+type Acknowledgment struct {
+	Applied uint64
+	Failed  uint64
+	Error   string
+}

@@ -8,10 +8,7 @@ import (
 	"sreda/internal/machine"
 )
 
-type Acknowledgment struct {
-	Applied, Failed uint64
-	Error           string
-}
+type Acknowledgment = agentprotocol.Acknowledgment
 type Heartbeat struct {
 	Ready             bool   `json:"ready"`
 	AppliedGeneration uint64 `json:"applied_generation,omitempty"`
@@ -44,7 +41,7 @@ func (c *Controller) Heartbeat(ctx context.Context, credential string, input Hea
 	if err != nil {
 		return agentprotocol.Control{}, err
 	}
-	if c.routes != nil {
+	if c.routes != nil && input.Ready {
 		if err = c.routes.Acknowledge(ctx, conn.ID, Acknowledgment{Applied: input.AppliedGeneration, Failed: input.FailedGeneration, Error: input.ApplyError}); err != nil {
 			return agentprotocol.Control{}, err
 		}

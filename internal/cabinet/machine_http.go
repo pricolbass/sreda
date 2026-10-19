@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sreda/internal/agentcontrol"
 	"sreda/internal/machine"
+	"sreda/internal/publication"
 	"strconv"
 	"strings"
 )
@@ -31,6 +32,11 @@ func machineActor(user User) machine.Actor {
 	return machine.Actor{ID: user.ID, Admin: user.Role == "admin"}
 }
 func (a *App) machineError(w http.ResponseWriter, err error) {
+	var publicationFailure *publication.Error
+	if errors.As(err, &publicationFailure) {
+		a.publicationError(w, err)
+		return
+	}
 	var failure *machine.Failure
 	if !errors.As(err, &failure) {
 		a.serverError(w, err)

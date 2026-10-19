@@ -204,8 +204,17 @@ func Enroll(ctx context.Context, dir, origin, code string, client *http.Client) 
 	}
 	return state, nil
 }
+
+type routeAcknowledgment struct {
+	Ready             bool   `json:"ready"`
+	AppliedGeneration uint64 `json:"applied_generation"`
+	FailedGeneration  uint64 `json:"failed_generation,omitempty"`
+	ApplyError        string `json:"apply_error,omitempty"`
+}
+
 func heartbeat(ctx context.Context, client *http.Client, s State, ready bool) (agentprotocol.Control, error) {
-	return exchange(ctx, client, s.Origin, "/api/agent/heartbeat", s.Credential, struct {
-		Ready bool `json:"ready"`
-	}{ready})
+	return heartbeatAcknowledgment(ctx, client, s, routeAcknowledgment{Ready: ready, AppliedGeneration: s.Control.Generation})
+}
+func heartbeatAcknowledgment(ctx context.Context, client *http.Client, s State, ack routeAcknowledgment) (agentprotocol.Control, error) {
+	return exchange(ctx, client, s.Origin, "/api/agent/heartbeat", s.Credential, ack)
 }

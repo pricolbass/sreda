@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"reflect"
 	"sreda/internal/agentprotocol"
-	"strconv"
 	"sync"
 )
 
@@ -48,19 +47,30 @@ func NewProxy(gatewayIP string) *Proxy {
 	return &Proxy{gatewayIP: gatewayIP, routes: make(map[string]*proxyRoute)}
 }
 
-// ValidateTarget limits first-version agent publications to literal loopback endpoints.
-// DNS and LAN addresses are intentionally unavailable to avoid cross-machine publication.
+// ValidateTargetSyntax validates literal endpoints without assuming this host owns the IP.
+func ValidateTargetSyntax(target string) error { return agentprotocol.ValidateTarget(target) }
+
+// ValidateTarget additionally requires ownership by this agent's machine.
 func ValidateTarget(target string) error {
-	host, port, err := net.SplitHostPort(target)
-	if err != nil {
-		return errors.New("укажите loopback IP:порт приложения")
+	if err := ValidateTargetSyntax(target); err != nil {
+		return err
 	}
+	host, _, _ := net.SplitHostPort(target)
 	ip := net.ParseIP(host)
-	number, err := strconv.Atoi(port)
-	if ip == nil || !ip.IsLoopback() || err != nil || number < 1 || number > 65535 {
-		return errors.New("агент публикует только literal loopback IP:порт этой машины")
+	if ip.IsLoopback() {
+		return nil
 	}
-	return nil
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return errors.New("не удалось проверить адреса машины")
+	}
+	for _, address := range addresses {
+		own, _, err := net.ParseCIDR(address.String())
+		if err == nil && own.Equal(ip) {
+			return nil
+		}
+	}
+	return errors.New("адрес не принадлежит интерфейсам этой машины")
 }
 func newRoute(target string) *proxyRoute {
 	route := &proxyRoute{target: target, connections: make(map[*routeConn]bool)}
@@ -135,8 +145,10 @@ func (p *Proxy) ApplyControl(c agentprotocol.Control) error {
 			return errors.New("некорректный идентификатор публикации")
 		}
 		seen[r.ID] = true
-		if err := ValidateTarget(r.Target); err != nil {
-			return err
+		if r.Enabled {
+			if err := ValidateTarget(r.Target); err != nil {
+				return err
+			}
 		}
 	}
 	next := map[string]*proxyRoute{}
