@@ -1,0 +1,28 @@
+[Unit]
+Description=Sreda WireGuard and isolation helper
+After=network-pre.target nftables.service
+Before=wg-quick@wg-sreda.service sreda.service
+
+[Service]
+User=root
+Group=sreda-network
+ExecStart=/opt/sreda/sreda-network
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=sreda-network
+RuntimeDirectoryMode=0750
+UMask=0007
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
