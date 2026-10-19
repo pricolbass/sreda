@@ -3,27 +3,30 @@ package cabinet
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"html/template"
 	"net/url"
 	"os"
 	"path/filepath"
+
 	"strings"
 
+	"sreda/internal/agentcontrol"
 	"sreda/internal/identity"
+	"sreda/internal/machine"
 
 	_ "modernc.org/sqlite"
 )
 
 type App struct {
-	identity *identity.Manager
-	db       *sql.DB
-	origin   string
-	host     string
-	pages    *template.Template
-	machines machineRuntime
+	identity     *identity.Manager
+	db           *sql.DB
+	origin       string
+	host         string
+	pages        *template.Template
+	machines     *machine.Manager
+	agentControl *agentcontrol.Controller
 }
 
 // Open creates the state directory and schema on first use. The origin is saved
@@ -63,6 +66,8 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	app.machines = machine.New(db)
+	app.agentControl = agentcontrol.New(app.machines, nil)
 	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates + recoveryTemplates)
 	if err != nil {
 		db.Close()
@@ -155,9 +160,4 @@ func (a *App) CreateAdministrator(login, password string) error {
 // ResetAdministratorPassword is available only to the local operator CLI.
 func (a *App) ResetAdministratorPassword(login, password string) error {
 	return a.identity.ResetAdministratorPassword(context.Background(), login, password)
-}
-
-func tokenHash(token string) []byte {
-	hash := sha256.Sum256([]byte(token))
-	return hash[:]
 }
