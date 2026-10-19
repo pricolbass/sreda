@@ -93,7 +93,7 @@ func (s *sqliteStore) claimConnectionCleanup(ctx context.Context, owner string, 
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT o.machine_id,COALESCE(m.public_key,''),COALESCE(m.tunnel_address,'') FROM machine_connection_ops o JOIN machines m ON m.id=o.machine_id WHERE o.lease_until<=? ORDER BY o.machine_id LIMIT 2`, now.Unix())
+	rows, err := tx.QueryContext(ctx, `SELECT o.machine_id,COALESCE(m.public_key,''),COALESCE(m.tunnel_address,'') FROM machine_connection_ops o JOIN machines m ON m.id=o.machine_id WHERE o.lease_until<=? ORDER BY o.last_attempt,o.machine_id LIMIT 2`, now.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (s *sqliteStore) claimConnectionCleanup(ctx context.Context, owner string, 
 		return nil, err
 	}
 	for _, op := range operations {
-		if _, err = tx.ExecContext(ctx, "UPDATE machine_connection_ops SET phase='cleanup',lease_owner=?,lease_until=? WHERE machine_id=?", owner, now.Add(enrollmentLease).Unix(), op.connection.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE machine_connection_ops SET phase='cleanup',lease_owner=?,lease_until=?,last_attempt=? WHERE machine_id=?", owner, now.Add(enrollmentLease).Unix(), now.Unix(), op.connection.ID); err != nil {
 			return nil, err
 		}
 	}

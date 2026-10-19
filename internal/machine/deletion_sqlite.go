@@ -21,9 +21,9 @@ type deletionIntent struct {
 }
 
 func InstallDeletionSchema(tx *sql.Tx) error {
-	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS machine_deletions(machine_id INTEGER PRIMARY KEY REFERENCES machines(id),lease_owner TEXT NOT NULL,lease_until INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '');
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS machine_deletions(machine_id INTEGER PRIMARY KEY REFERENCES machines(id),lease_owner TEXT NOT NULL,lease_until INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '',last_attempt INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS machine_tombstones(id INTEGER PRIMARY KEY,owner_id INTEGER NOT NULL,name TEXT NOT NULL,deleted_at INTEGER NOT NULL);
- CREATE TABLE IF NOT EXISTS machine_connection_ops(machine_id INTEGER PRIMARY KEY REFERENCES machines(id),desired_enabled INTEGER NOT NULL,phase TEXT NOT NULL,lease_owner TEXT NOT NULL,lease_until INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS machine_connection_ops(machine_id INTEGER PRIMARY KEY REFERENCES machines(id),desired_enabled INTEGER NOT NULL,phase TEXT NOT NULL,lease_owner TEXT NOT NULL,lease_until INTEGER NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0);
  CREATE TRIGGER IF NOT EXISTS machine_id_no_reuse BEFORE INSERT ON machines WHEN EXISTS(SELECT 1 FROM machine_tombstones WHERE id=NEW.id) BEGIN SELECT RAISE(ABORT,'machine id was deleted'); END;`)
 	return err
 }
@@ -82,7 +82,7 @@ func (s *sqliteStore) reserveDeletion(ctx context.Context, id int64, owner strin
 	intent.connection.ID = id
 	intent.connection.OwnerID = candidate.OwnerID
 	intent.owner = owner
-	if _, err = tx.ExecContext(ctx, `INSERT INTO machine_deletions(machine_id,lease_owner,lease_until) VALUES(?,?,?) ON CONFLICT(machine_id) DO UPDATE SET lease_owner=excluded.lease_owner,lease_until=excluded.lease_until`, id, owner, now.Add(enrollmentLease).Unix()); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO machine_deletions(machine_id,lease_owner,lease_until,last_attempt) VALUES(?,?,?,?) ON CONFLICT(machine_id) DO UPDATE SET lease_owner=excluded.lease_owner,lease_until=excluded.lease_until,last_attempt=excluded.last_attempt`, id, owner, now.Add(enrollmentLease).Unix(), now.Unix()); err != nil {
 		return intent, false, err
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=0,credential_hash=NULL,code_hash=NULL,code_expires_at=NULL WHERE id=?", id); err != nil {
@@ -160,7 +160,7 @@ func (s *sqliteStore) finishDeletion(ctx context.Context, intent deletionIntent)
 	return tx.Commit()
 }
 func (s *sqliteStore) pendingDeletions(ctx context.Context) ([]deletionCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT machine_id FROM machine_deletions WHERE lease_until<=? ORDER BY machine_id LIMIT 2", time.Now().Unix())
+	rows, err := s.db.QueryContext(ctx, "SELECT machine_id FROM machine_deletions WHERE lease_until<=? ORDER BY last_attempt,machine_id LIMIT 2", time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}
