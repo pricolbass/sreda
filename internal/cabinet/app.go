@@ -22,10 +22,11 @@ const passwordCost = 12
 var loginPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,63}$`)
 
 type App struct {
-	db     *sql.DB
-	origin string
-	host   string
-	pages  *template.Template
+	db       *sql.DB
+	origin   string
+	host     string
+	pages    *template.Template
+	machines machineRuntime
 }
 
 // Open creates the state directory and schema on first use. The origin is saved
@@ -105,6 +106,9 @@ func (a *App) initialize(origin string) error {
 		if err != nil {
 			return err
 		}
+	}
+	if err := installMachineSchema(tx); err != nil {
+		return err
 	}
 	var saved string
 	err = tx.QueryRow("SELECT value FROM settings WHERE key = 'origin'").Scan(&saved)
