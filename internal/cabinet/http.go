@@ -35,6 +35,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /logout", a.logout)
 	a.registerMachineRoutes(mux)
 	a.registerInvitationRoutes(mux)
+	a.registerPasswordRecoveryRoutes(mux)
 	return a.protect(mux)
 }
 
@@ -138,8 +139,15 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if _, err = tx.ExecContext(r.Context(), "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)", tokenHash(token), id, time.Now().Add(sessionLifetime).Unix()); err != nil {
+	result, err := tx.ExecContext(r.Context(), "INSERT INTO sessions (token_hash, user_id, expires_at) SELECT ?, id, ? FROM users WHERE id = ? AND password_hash = ?", tokenHash(token), time.Now().Add(sessionLifetime).Unix(), id, hash)
+	if err != nil {
 		a.serverError(w, err)
+		return
+	}
+	count, _ := result.RowsAffected()
+	if count != 1 {
+		tx.Rollback()
+		a.render(w, http.StatusUnauthorized, "login", "", "Неверный логин или пароль")
 		return
 	}
 	if err := tx.Commit(); err != nil {

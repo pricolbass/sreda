@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strings"
 
-	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
@@ -66,7 +65,7 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates)
+	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates + recoveryTemplates)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -84,7 +83,7 @@ func (a *App) initialize(origin string) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 2 {
+	if version > 3 {
 		return errors.New("версия базы новее приложения")
 	}
 	if version == 0 {
@@ -110,6 +109,11 @@ func (a *App) initialize(origin string) error {
 	}
 	if version < 2 {
 		if err := migrateInvitations(tx); err != nil {
+			return err
+		}
+	}
+	if version < 3 {
+		if err := installPasswordRecovery(tx); err != nil {
 			return err
 		}
 	}
@@ -150,10 +154,7 @@ func (a *App) CreateAdministrator(login, password string) error {
 	if !loginPattern.MatchString(login) {
 		return errors.New("логин: 3–64 символа, латинские буквы, цифры, _, . или -; первый символ — буква или цифра")
 	}
-	if len(password) < 12 || len(password) > 72 {
-		return errors.New("пароль должен содержать от 12 до 72 байт")
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), passwordCost)
+	hash, err := accountPasswordHash(password)
 	if err != nil {
 		return err
 	}
