@@ -26,6 +26,11 @@ func serve(dir, origin, socket string, output io.Writer) error {
 		return err
 	}
 	defer app.Close()
+	if zone := os.Getenv("SREDA_ZONE"); zone != "" {
+		if err := app.ConfigurePublicationZone(zone); err != nil {
+			return err
+		}
+	}
 	networkSocket, publicKey, endpoint := os.Getenv("SREDA_NETWORK_SOCKET"), os.Getenv("SREDA_WG_PUBLIC_KEY"), os.Getenv("SREDA_WG_ENDPOINT")
 	hasNetwork := networkSocket != "" || publicKey != "" || endpoint != ""
 	if hasNetwork {
@@ -66,7 +71,7 @@ func serve(dir, origin, socket string, output io.Writer) error {
 	}
 	server := &http.Server{
 		Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second,
+		ReadTimeout: 10 * time.Second,
 		IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -4,7 +4,7 @@
 	admin off
 }
 
-https://localhost:8443 {
+https://localhost:8443, https://*.localhost:8443 {
 	bind 127.0.0.1 ::1
 	tls internal
 	reverse_proxy unix/{$SREDA_SOCKET} {

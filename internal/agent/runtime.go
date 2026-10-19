@@ -108,10 +108,11 @@ func Run(ctx context.Context, dir string, output io.Writer) error {
 	defer ticker.Stop()
 	client := defaultClient(nil)
 	lastSuccess := time.Now()
+	acknowledgment := routeAcknowledgment{Ready: true, AppliedGeneration: state.Control.Generation}
 	fmt.Fprintln(output, "Агент запущен; публикации управляются из кабинета.")
 	for {
 		requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		control, controlErr := heartbeat(requestCtx, client, state, true)
+		control, controlErr := heartbeatAcknowledgment(requestCtx, client, state, acknowledgment)
 		cancel()
 		if controlErr == nil {
 			if err = validateControl(control); err != nil {
@@ -121,11 +122,14 @@ func Run(ctx context.Context, dir string, output io.Writer) error {
 				return errors.New("конфигурация туннеля изменилась; перезапустите агент")
 			}
 			if err = proxy.ApplyControl(control); err != nil {
-				return err
-			}
-			state.Control = control
-			if err = saveState(dir, state); err != nil {
-				return err
+				acknowledgment.FailedGeneration = control.Generation
+				acknowledgment.ApplyError = "Агент не смог применить маршруты: проверьте принадлежность IP-адреса этой машине"
+			} else {
+				acknowledgment = routeAcknowledgment{Ready: true, AppliedGeneration: control.Generation}
+				state.Control = control
+				if err = saveState(dir, state); err != nil {
+					return err
+				}
 			}
 			lastSuccess = time.Now()
 		} else {
