@@ -122,51 +122,42 @@ func (m *Manager) Enroll(ctx context.Context, input EnrollInput) (Connection, er
 	if err := m.gateway.Details().Validate(); err != nil {
 		return Connection{}, failure(Unavailable, "Сетевой шлюз настроен некорректно; код сохранён")
 	}
-	tx, err := m.store.beginEnrollment(ctx)
-	if err != nil {
-		return Connection{}, err
-	}
-	defer tx.rollback()
-	conn, err := tx.pending(ctx, hash(input.Code), time.Now().Unix())
-	if err != nil {
-		return Connection{}, err
-	}
-	keyInUse, err := tx.keyInUse(ctx, input.PublicKey)
-	if err != nil {
-		return Connection{}, err
-	}
-	if keyInUse {
-		return Connection{}, failure(Invalid, "Этот публичный ключ уже закреплён за другой машиной")
-	}
-	used, err := tx.addresses(ctx)
-	if err != nil {
-		return Connection{}, err
-	}
+
+	pool := make([]string, 0, 100)
 	for i := 2; i <= 101; i++ {
-		candidate := fmt.Sprintf("10.203.0.%d/32", i)
-		if !used[candidate] {
-			conn.Address = candidate
-			break
+		pool = append(pool, fmt.Sprintf("10.203.0.%d/32", i))
+	}
+	owner := token()
+	now := time.Now()
+	intent, err := m.store.reserveEnrollment(ctx, input, token(), owner, now.Unix(), now.Add(enrollmentLease).Unix(), pool)
+	if err != nil {
+		return Connection{}, err
+	}
+	if intent.phase == "cleanup" {
+		if err := m.compensateEnrollment(intent); err != nil {
+			return Connection{}, failure(Unavailable, "Очистка прежней попытки подключения не подтверждена; повторите позже")
+		}
+		now = time.Now()
+		intent, err = m.store.reserveEnrollment(ctx, input, token(), owner, now.Unix(), now.Add(enrollmentLease).Unix(), pool)
+		if err != nil {
+			return Connection{}, err
 		}
 	}
-	if conn.Address == "" {
-		return Connection{}, failure(Unavailable, "Исчерпан пул из 100 подключений")
-	}
-	conn.PublicKey = input.PublicKey
-	conn.ProxyToken = token()
-	conn.Enabled = true
-	peer := tunnel.Peer{MachineID: conn.ID, PublicKey: conn.PublicKey, Address: conn.Address}
-	if err = m.gateway.ApplyPeer(ctx, peer); err != nil {
-		return Connection{}, failure(Unavailable, "Не удалось подтвердить настройку сети; повторите подключение")
-	}
-	if err = tx.save(ctx, conn, hash(input.Credential)); err == nil {
-		err = tx.commit()
+	operationCtx, cancel := context.WithTimeout(ctx, enrollmentOperationTimeout)
+	err = m.gateway.ApplyPeer(operationCtx, intent.peer())
+	cancel()
+	if err == nil {
+		err = m.store.finalizeEnrollment(ctx, intent, time.Now().Unix())
 	}
 	if err != nil {
-		_ = m.gateway.RemovePeer(ctx, peer)
-		return Connection{}, errors.New("не удалось сохранить подключение")
+		cleanupErr := m.compensateEnrollment(intent)
+		if cleanupErr != nil {
+			return Connection{}, failure(Unavailable, "Подключение не завершено; очистка сети не подтверждена и будет повторена")
+		}
+		return Connection{}, failure(Unavailable, "Не удалось подтвердить настройку сети; повторите подключение")
 	}
-	return conn, nil
+	intent.connection.Enabled = true
+	return intent.connection, nil
 }
 func (m *Manager) AuthenticateAgent(ctx context.Context, credential string) (Connection, error) {
 	if len(credential) != 43 || m.gateway == nil {
@@ -207,17 +198,65 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	if m.gateway == nil {
 		return failure(Unavailable, "сетевой шлюз не настроен")
 	}
-	peers, err := m.store.enabledPeers(ctx)
+
+	now := time.Now()
+	intents, err := m.store.claimEnrollmentCleanup(ctx, token(), now.Unix(), now.Add(enrollmentLease).Unix(), enrollmentCleanupBatch)
 	if err != nil {
 		return err
 	}
-	for _, peer := range peers {
-		if err = m.gateway.ApplyPeer(ctx, peer); err != nil {
-			return failure(Unavailable, "сетевой helper не подтвердил восстановление подключений")
+	var failures []error
+	for _, intent := range intents {
+		cleanupCtx, cancel := context.WithTimeout(ctx, enrollmentCleanupTimeout)
+		err := m.cleanupEnrollment(cleanupCtx, intent, enrollmentCleanupTimeout)
+		cancel()
+		if err != nil {
+			failures = append(failures, err)
 		}
+	}
+	peers, err := m.store.enabledPeers(ctx)
+	if err != nil {
+		return errors.Join(append(failures, err)...)
+	}
+	for _, peer := range peers {
+		if err := m.gateway.ApplyPeer(ctx, peer); err != nil {
+			failures = append(failures, failure(Unavailable, "сетевой helper не подтвердил восстановление подключений"))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+const enrollmentOperationTimeout = 10 * time.Second
+const enrollmentCleanupTimeout = 3 * time.Second
+const enrollmentCleanupBatch = 2
+const enrollmentLease = 45 * time.Second
+
+func (intent enrollmentIntent) peer() tunnel.Peer {
+	return tunnel.Peer{MachineID: intent.connection.ID, PublicKey: intent.connection.PublicKey, Address: intent.connection.Address}
+}
+
+// Compensation has its own bounded context: canceling an HTTP request must not
+// cancel fail-closed cleanup or the record needed by the next reconciliation.
+func (m *Manager) compensateEnrollment(intent enrollmentIntent) error {
+	ctx, cancel := context.WithTimeout(context.Background(), enrollmentOperationTimeout)
+	defer cancel()
+	return m.cleanupEnrollment(ctx, intent, enrollmentOperationTimeout)
+}
+func (m *Manager) cleanupEnrollment(ctx context.Context, intent enrollmentIntent, releaseTimeout time.Duration) error {
+	if err := m.store.markEnrollmentCleanup(ctx, intent, time.Now().Add(enrollmentLease).Unix()); err != nil {
+		return err
+	}
+	err := m.gateway.RemovePeer(ctx, intent.peer())
+	if err == nil {
+		err = m.store.finishEnrollmentCleanup(ctx, intent)
+	}
+	if err != nil {
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), releaseTimeout)
+		defer releaseCancel()
+		return errors.Join(err, m.store.releaseEnrollmentCleanup(releaseCtx, intent))
 	}
 	return nil
 }
+
 func token() string {
 	var value [32]byte
 	_, _ = rand.Read(value[:])

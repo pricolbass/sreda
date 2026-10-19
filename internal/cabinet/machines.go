@@ -14,7 +14,14 @@ func installMachineSchema(tx *sql.Tx) error {
  public_key TEXT UNIQUE, tunnel_address TEXT UNIQUE, proxy_token TEXT,
  enabled INTEGER NOT NULL DEFAULT 0, last_seen INTEGER,
  created_at INTEGER NOT NULL
- ); CREATE INDEX IF NOT EXISTS machines_owner ON machines(owner_id);`)
+ ); CREATE INDEX IF NOT EXISTS machines_owner ON machines(owner_id);
+ CREATE TABLE IF NOT EXISTS machine_enrollments(
+ machine_id INTEGER PRIMARY KEY REFERENCES machines(id), code_hash BLOB NOT NULL UNIQUE,
+ credential_hash BLOB NOT NULL UNIQUE, public_key TEXT NOT NULL UNIQUE,
+ tunnel_address TEXT NOT NULL UNIQUE, proxy_token TEXT NOT NULL,
+ phase TEXT NOT NULL CHECK(phase IN ('applying','cleanup')),
+ lease_owner TEXT NOT NULL,lease_until INTEGER NOT NULL,last_attempt INTEGER NOT NULL DEFAULT 0
+ );`)
 	return err
 }
 
