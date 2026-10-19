@@ -2,30 +2,20 @@ package cabinet
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/base64"
 	"errors"
 	"log"
 	"net/http"
-	"sync"
-	"time"
 
-	"golang.org/x/crypto/bcrypt"
+	"sreda/internal/identity"
 )
 
 const sessionCookie = "__Host-sreda-session"
 const csrfCookie = "__Host-sreda-csrf"
-const sessionLifetime = 12 * time.Hour
-
-var dummyPasswordHash = sync.OnceValue(func() []byte {
-	hash, err := bcrypt.GenerateFromPassword([]byte("unused-account-password"), passwordCost)
-	if err != nil {
-		panic(err)
-	}
-	return hash
-})
+const sessionLifetime = identity.SessionLifetime
 
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -107,50 +97,12 @@ func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) login(w http.ResponseWriter, r *http.Request) {
-	var id int64
-	var hash []byte
-	err := a.db.QueryRowContext(r.Context(), "SELECT id, password_hash FROM users WHERE login = ?", r.PostForm.Get("login")).Scan(&id, &hash)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		a.serverError(w, err)
+	token, err := a.identity.SignIn(r.Context(), r.PostForm.Get("login"), r.PostForm.Get("password"), sessionToken(r))
+	if errors.Is(err, identity.InvalidCredentials) {
+		a.render(w, http.StatusUnauthorized, "login", "", err.Error())
 		return
 	}
-	if errors.Is(err, sql.ErrNoRows) {
-		hash = dummyPasswordHash()
-	}
-	password := r.PostForm.Get("password")
-	if bcrypt.CompareHashAndPassword(hash, []byte(password)) != nil || id == 0 || len(password) > 72 {
-		a.render(w, http.StatusUnauthorized, "login", "", "Неверный логин или пароль")
-		return
-	}
-	token := randomToken()
-	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		a.serverError(w, err)
-		return
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE expires_at <= ?", time.Now().Unix()); err != nil {
-		a.serverError(w, err)
-		return
-	}
-	if old, err := r.Cookie(sessionCookie); err == nil {
-		if _, err := tx.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash = ?", tokenHash(old.Value)); err != nil {
-			a.serverError(w, err)
-			return
-		}
-	}
-	result, err := tx.ExecContext(r.Context(), "INSERT INTO sessions (token_hash, user_id, expires_at) SELECT ?, id, ? FROM users WHERE id = ? AND password_hash = ?", tokenHash(token), time.Now().Add(sessionLifetime).Unix(), id, hash)
-	if err != nil {
-		a.serverError(w, err)
-		return
-	}
-	count, _ := result.RowsAffected()
-	if count != 1 {
-		tx.Rollback()
-		a.render(w, http.StatusUnauthorized, "login", "", "Неверный логин или пароль")
-		return
-	}
-	if err := tx.Commit(); err != nil {
 		a.serverError(w, err)
 		return
 	}
@@ -166,21 +118,24 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 	a.renderPage(w, http.StatusOK, "dashboard", pageData{Login: user.Login, Role: user.Role})
 }
 
-// User identifies the account authorized by the current server-side session.
-type User struct {
-	ID          int64
-	Login, Role string
-}
+// User remains an alias for machine and publication ownership adapters.
+type User = identity.User
 
-func (a *App) currentUser(w http.ResponseWriter, r *http.Request) (User, bool) {
-	var user User
+func sessionToken(r *http.Request) string {
 	cookie, err := r.Cookie(sessionCookie)
-	if err == nil {
-		err = a.db.QueryRowContext(r.Context(), `SELECT users.id, users.login, users.role FROM sessions JOIN users ON users.id = sessions.user_id
-   WHERE sessions.token_hash = ? AND sessions.expires_at > ?`, tokenHash(cookie.Value), time.Now().Unix()).Scan(&user.ID, &user.Login, &user.Role)
+	if err != nil {
+		return ""
 	}
-	if errors.Is(err, http.ErrNoCookie) || errors.Is(err, sql.ErrNoRows) {
+	return cookie.Value
+}
+func (a *App) sessionUser(w http.ResponseWriter, r *http.Request, lookup func(context.Context, string) (User, error)) (User, bool) {
+	user, err := lookup(r.Context(), sessionToken(r))
+	if errors.Is(err, identity.Unauthenticated) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return User{}, false
+	}
+	if errors.Is(err, identity.Forbidden) {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return User{}, false
 	}
 	if err != nil {
@@ -189,25 +144,17 @@ func (a *App) currentUser(w http.ResponseWriter, r *http.Request) (User, bool) {
 	}
 	return user, true
 }
-
+func (a *App) currentUser(w http.ResponseWriter, r *http.Request) (User, bool) {
+	return a.sessionUser(w, r, a.identity.CurrentUser)
+}
 func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request) (User, bool) {
-	user, ok := a.currentUser(w, r)
-	if !ok {
-		return User{}, false
-	}
-	if user.Role != "admin" {
-		http.Error(w, "Требуются права администратора", http.StatusForbidden)
-		return User{}, false
-	}
-	return user, true
+	return a.sessionUser(w, r, a.identity.Administrator)
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
-		if _, err := a.db.ExecContext(r.Context(), "DELETE FROM sessions WHERE token_hash = ?", tokenHash(cookie.Value)); err != nil {
-			a.serverError(w, err)
-			return
-		}
+	if err := a.identity.SignOut(r.Context(), sessionToken(r)); err != nil {
+		a.serverError(w, err)
+		return
 	}
 	setCookie(w, sessionCookie, "", -1)
 	setCookie(w, csrfCookie, "", -1)
