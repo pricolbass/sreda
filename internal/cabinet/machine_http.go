@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"sreda/internal/agentcontrol"
 	"sreda/internal/machine"
+	"sreda/internal/publication"
 	"strconv"
 	"strings"
-	"time"
 )
 
 func (a *App) registerMachineRoutes(mux *http.ServeMux) {
@@ -32,6 +32,11 @@ func machineActor(user User) machine.Actor {
 	return machine.Actor{ID: user.ID, Admin: user.Role == "admin"}
 }
 func (a *App) machineError(w http.ResponseWriter, err error) {
+	var publicationFailure *publication.Error
+	if errors.As(err, &publicationFailure) {
+		a.publicationError(w, err)
+		return
+	}
 	var failure *machine.Failure
 	if !errors.As(err, &failure) {
 		a.serverError(w, err)
@@ -63,7 +68,7 @@ func (a *App) machinePage(w http.ResponseWriter, r *http.Request) {
 		view := machineView{ID: record.ID, Name: record.Name, Owner: record.Owner, State: "Нет связи", LastSeen: "Ещё не было"}
 		if !record.LastSeen.IsZero() {
 			view.LastSeen = record.LastSeen.UTC().Format("2006-01-02 15:04:05 UTC")
-			if record.Enabled && time.Since(record.LastSeen) < machine.ContactLifetime {
+			if record.Online {
 				view.State = "На связи"
 			}
 		}

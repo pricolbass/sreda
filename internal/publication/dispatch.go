@@ -3,6 +3,7 @@ package publication
 import (
 	"net"
 	"net/http"
+	"sreda/internal/machine"
 	"strings"
 	"time"
 )
@@ -45,7 +46,7 @@ func (m *Module) Wrap(cabinet http.Handler) http.Handler {
 			}
 			return
 		}
-		if !connection.Desired || !connection.Enabled || connection.State != "Настроена" || connection.LastSeen == 0 || time.Since(time.Unix(connection.LastSeen, 0)) >= 90*time.Second {
+		if !connection.Desired || connection.State != "Настроена" || !machine.ContactIsOnline(connection.Enabled, time.Unix(connection.LastSeen, 0), time.Now()) {
 			m.mu.Unlock()
 			http.Error(w, "Сервис временно недоступен", 503)
 			return

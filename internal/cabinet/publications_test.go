@@ -345,3 +345,14 @@ func TestPublicationOwnershipCoversMachineAndPublicationIdentifiers(t *testing.T
 		t.Fatal("admin cannot inspect publication owner")
 	}
 }
+
+func TestUnknownAgentGenerationIsConflict(t *testing.T) {
+	app, b, _ := setup(t)
+	app.SetGateway(testGateway{})
+	b.login()
+	credential := enrolledMachine(t, b)
+	w := agentContact(t, b, credential, `{"ready":true,"applied_generation":99}`)
+	if w.Code != 409 {
+		t.Fatalf("unknown generation: %d %s", w.Code, w.Body.String())
+	}
+}
