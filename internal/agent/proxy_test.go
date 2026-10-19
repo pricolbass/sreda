@@ -85,3 +85,27 @@ func TestSuspendedProxyResumesSameGenerationWithoutAcceptingOlderControl(t *test
 		t.Fatalf("same snapshot did not resume route: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestDisabledUnassignedTargetDoesNotPreventRevocation(t *testing.T) {
+	proxy := agent.NewProxy("10.203.0.1")
+	defer proxy.Close()
+	control := agentprotocol.Control{ProxyToken: strings.Repeat("p", 43), Generation: 1, Routes: []agentprotocol.Route{{ID: "retired", Target: "127.0.0.1:8080", Enabled: true}}}
+	if err := proxy.ApplyControl(control); err != nil {
+		t.Fatal(err)
+	}
+	control.Generation = 2
+	control.Routes[0].Enabled = false
+	control.Routes[0].Target = "192.0.2.33:8080"
+	if err := proxy.ApplyControl(control); err != nil {
+		t.Fatalf("inactive target prevented revocation: %v", err)
+	}
+	request := httptest.NewRequest("GET", "http://app.example.test/", nil)
+	request.RemoteAddr = "10.203.0.1:4000"
+	request.Header.Set("X-Sreda-Proxy-Token", control.ProxyToken)
+	request.Header.Set("X-Sreda-Publication", "retired")
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+	if response.Code != 404 {
+		t.Fatalf("inactive route accepted: %d", response.Code)
+	}
+}

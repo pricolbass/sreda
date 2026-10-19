@@ -31,11 +31,11 @@ func (s *sqliteStore) saveZone(ctx context.Context, zone string) (string, error)
 	return s.zone(ctx)
 }
 
-const columns = `p.id,p.machine_id,p.subdomain,p.target,p.state,p.error,p.revision,u.login`
+const columns = `p.id,p.machine_id,p.subdomain,p.target,p.state,p.error,p.revision,u.login,m.owner_id,p.desired_enabled`
 
 func scanPublication(row interface{ Scan(...any) error }) (Publication, error) {
 	var p Publication
-	err := row.Scan(&p.ID, &p.MachineID, &p.Subdomain, &p.Target, &p.State, &p.Error, &p.Revision, &p.Owner)
+	err := row.Scan(&p.ID, &p.MachineID, &p.Subdomain, &p.Target, &p.State, &p.Error, &p.Revision, &p.Owner, &p.OwnerID, &p.DesiredEnabled)
 	return p, err
 }
 func (s *sqliteStore) get(ctx context.Context, actor Actor, id string) (Publication, error) {
