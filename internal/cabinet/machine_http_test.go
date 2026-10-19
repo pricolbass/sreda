@@ -152,3 +152,42 @@ func TestMachineOwnershipIncludesDirectIdentifierAccess(t *testing.T) {
 		t.Fatalf("anonymous ID accessible: %d", w.Code)
 	}
 }
+
+func TestExistingMachineKeyCannotBeReassignedByAnotherEnrollment(t *testing.T) {
+	app, b, _ := setup(t)
+	app.SetGateway(testGateway{})
+	b.login()
+	create := func(name string) string {
+		b.request("GET", "/machines", nil)
+		response := b.request("POST", "/machines", url.Values{"name": {name}})
+		if response.Code != 201 {
+			t.Fatalf("create: %d", response.Code)
+		}
+		var result struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		return result.Code
+	}
+	enroll := func(code, key, credential string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{"code": code, "public_key": key, "credential": credential})
+		request := httptest.NewRequest("POST", origin+"/api/agent/enroll", strings.NewReader(string(body)))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		b.handler.ServeHTTP(response, request)
+		return response
+	}
+	key := "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	if response := enroll(create("First machine"), key, strings.Repeat("a", 43)); response.Code != 201 {
+		t.Fatalf("first: %d", response.Code)
+	}
+	second := create("Second machine")
+	if response := enroll(second, key, strings.Repeat("b", 43)); response.Code != 400 {
+		t.Fatalf("reused key: %d %s", response.Code, response.Body.String())
+	}
+	if response := enroll(second, "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", strings.Repeat("b", 43)); response.Code != 201 {
+		t.Fatalf("fresh key lost code: %d %s", response.Code, response.Body.String())
+	}
+}

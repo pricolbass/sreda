@@ -12,7 +12,6 @@ import (
 	"sreda/internal/machine"
 	"strconv"
 	"strings"
-	"time"
 )
 
 func (a *App) registerMachineRoutes(mux *http.ServeMux) {
@@ -63,7 +62,7 @@ func (a *App) machinePage(w http.ResponseWriter, r *http.Request) {
 		view := machineView{ID: record.ID, Name: record.Name, Owner: record.Owner, State: "Нет связи", LastSeen: "Ещё не было"}
 		if !record.LastSeen.IsZero() {
 			view.LastSeen = record.LastSeen.UTC().Format("2006-01-02 15:04:05 UTC")
-			if record.Enabled && time.Since(record.LastSeen) < machine.ContactLifetime {
+			if record.Online {
 				view.State = "На связи"
 			}
 		}
