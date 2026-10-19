@@ -1,0 +1,25 @@
+[Unit]
+Description=Среда — агент машины
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/sreda-agent run --state-dir /var/lib/sreda-agent
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+StateDirectory=sreda-agent
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/sreda-agent
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"sreda/internal/cabinet"
+	"sreda/internal/tunnel"
 )
 
 func serve(dir, origin, socket string, output io.Writer) error {
@@ -25,6 +26,18 @@ func serve(dir, origin, socket string, output io.Writer) error {
 		return err
 	}
 	defer app.Close()
+	networkSocket, publicKey, endpoint := os.Getenv("SREDA_NETWORK_SOCKET"), os.Getenv("SREDA_WG_PUBLIC_KEY"), os.Getenv("SREDA_WG_ENDPOINT")
+	hasNetwork := networkSocket != "" || publicKey != "" || endpoint != ""
+	if hasNetwork {
+		if !filepath.IsAbs(networkSocket) || publicKey == "" || endpoint == "" {
+			return errors.New("задайте SREDA_NETWORK_SOCKET (абсолютный путь), SREDA_WG_PUBLIC_KEY и SREDA_WG_ENDPOINT вместе")
+		}
+		details := tunnel.Details{GatewayPublicKey: publicKey, Endpoint: endpoint, GatewayAddress: "10.203.0.1/32"}
+		if err := details.Validate(); err != nil {
+			return err
+		}
+		app.SetGateway(tunnel.NewClient(networkSocket, details))
+	}
 	if info, err := os.Lstat(socket); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
 			return errors.New("путь сокета занят обычным файлом")
@@ -58,6 +71,35 @@ func serve(dir, origin, socket string, output io.Writer) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	networkDone := make(chan struct{})
+	if !hasNetwork {
+		close(networkDone)
+	}
+	defer func() { stop(); <-networkDone }()
+	if hasNetwork {
+		go func() {
+			defer close(networkDone)
+
+			reconcile := func() {
+				operationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+				defer cancel()
+				if err := app.ReconcileMachinePeers(operationCtx); err != nil && ctx.Err() == nil {
+					fmt.Fprintln(output, "Сетевой helper не подтвердил восстановление подключений; повтор через 30 секунд.")
+				}
+			}
+			reconcile()
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					reconcile()
+				}
+			}
+		}()
+	}
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
