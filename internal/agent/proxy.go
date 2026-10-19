@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"reflect"
 	"sreda/internal/agentprotocol"
-	"strconv"
 	"sync"
 )
 
@@ -51,21 +50,7 @@ func NewProxy(gatewayIP string) *Proxy {
 // ValidateTarget limits first-version agent publications to literal loopback endpoints.
 // DNS and LAN addresses are intentionally unavailable to avoid cross-machine publication.
 // ValidateTargetSyntax validates literal endpoints without assuming this host owns the IP.
-func ValidateTargetSyntax(target string) error {
-	host, port, err := net.SplitHostPort(target)
-	if err != nil {
-		return errors.New("укажите literal IP:порт приложения")
-	}
-	ip := net.ParseIP(host)
-	number, err := strconv.Atoi(port)
-	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || err != nil || number < 1 || number > 65535 {
-		return errors.New("недопустимый IP или порт приложения")
-	}
-	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 10 && ip4[1] == 203 && ip4[2] == 0 {
-		return errors.New("адреса WireGuard не являются локальным приложением")
-	}
-	return nil
-}
+func ValidateTargetSyntax(target string) error { return agentprotocol.ValidateTarget(target) }
 
 // ValidateTarget additionally requires ownership by this agent's machine.
 func ValidateTarget(target string) error {

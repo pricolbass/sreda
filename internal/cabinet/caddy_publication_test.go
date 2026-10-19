@@ -86,10 +86,21 @@ func caddyClient(t *testing.T, handler http.Handler) (*http.Client, string) {
 		return (&net.Dialer{}).DialContext(ctx, network, fmt.Sprintf("127.0.0.1:%d", port))
 	}}
 	t.Cleanup(transport.CloseIdleConnections)
-	client:=&http.Client{Transport:transport,Timeout:10*time.Second}
- var probeErr error
- for time.Now().Before(deadline){response,err:=client.Get("https://application.example.test/");probeErr=err;if err==nil{response.Body.Close();break};time.Sleep(30*time.Millisecond)}
- if probeErr!=nil{output,_:=os.ReadFile(logPath);t.Fatalf("Caddy TLS probe: %v %s",probeErr,output)}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	var probeErr error
+	for time.Now().Before(deadline) {
+		response, err := client.Get("https://application.example.test/")
+		probeErr = err
+		if err == nil {
+			response.Body.Close()
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if probeErr != nil {
+		output, _ := os.ReadFile(logPath)
+		t.Fatalf("Caddy TLS probe: %v %s", probeErr, output)
+	}
 
- return client,"https://application.example.test"
+	return client, "https://application.example.test"
 }

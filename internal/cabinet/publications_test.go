@@ -10,7 +10,9 @@ import (
 	"net/url"
 	"sreda/internal/agent"
 	"sreda/internal/agentprotocol"
+	"sreda/internal/cabinet"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -217,4 +219,98 @@ func TestAgentRejectsNewMapWithoutBreakingExistingPublication(t *testing.T) {
 
 type PublicationResult struct {
 	ID string `json:"id"`
+}
+
+func TestPublicationNameCollisionAndInvalidTargetsDoNotCreateAnotherRoute(t *testing.T) {
+	app, b, dir := setup(t)
+	app.SetGateway(testGateway{})
+	app.ConfigurePublicationZone("example.test")
+	b.login()
+	enrolledMachine(t, b)
+	b.request("GET", "/publications", nil)
+	for _, input := range []url.Values{
+		{"machine_id": {"1"}, "subdomain": {"sreda"}, "target": {"127.0.0.1:8080"}},
+		{"machine_id": {"1"}, "subdomain": {"UpperCase"}, "target": {"127.0.0.1:8080"}},
+		{"machine_id": {"1"}, "subdomain": {"app"}, "target": {"neighbor.example.test:8080"}},
+		{"machine_id": {"1"}, "subdomain": {"app"}, "target": {"10.203.0.3:8080"}},
+		{"machine_id": {"1"}, "subdomain": {"app"}, "target": {"127.0.0.1:0"}},
+	} {
+		if w := b.request("POST", "/publications", input); w.Code != 400 {
+			t.Fatalf("invalid input accepted: %d %s", w.Code, w.Body.String())
+		}
+	}
+	second, err := cabinet.Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	clients := []*browser{visitor(t, b), visitor(t, b)}
+	clients[1].handler = second.Handler()
+	for _, client := range clients {
+		client.csrf = b.csrf
+		for name, cookie := range b.cookies {
+			client.cookies[name] = cookie
+		}
+	}
+	codes := make(chan int, 2)
+	var wg sync.WaitGroup
+	for i, client := range clients {
+		wg.Add(1)
+		go func(i int, client *browser) {
+			defer wg.Done()
+			codes <- client.request("POST", "/publications", url.Values{"machine_id": {"1"}, "subdomain": {"contested"}, "target": {[]string{"127.0.0.1:8080", "127.0.0.1:9090"}[i]}}).Code
+		}(i, client)
+	}
+	wg.Wait()
+	close(codes)
+	counts := map[int]int{}
+	for code := range codes {
+		counts[code]++
+	}
+	if counts[201] != 1 || counts[409] != 1 {
+		t.Fatalf("name collision: %+v", counts)
+	}
+}
+func TestPublicationOwnershipCoversMachineAndPublicationIdentifiers(t *testing.T) {
+	app, admin, _ := setup(t)
+	app.SetGateway(testGateway{})
+	app.ConfigurePublicationZone("example.test")
+	admin.login()
+	person := func(login string) *browser {
+		link := invitation(t, admin, "24h")
+		p := visitor(t, admin)
+		if status := accept(t, p, link, login); status != 303 {
+			t.Fatal(status)
+		}
+		p.request("GET", "/login", nil)
+		if w := p.request("POST", "/login", url.Values{"login": {login}, "password": {password}}); w.Code != 303 {
+			t.Fatal(w.Code)
+		}
+		return p
+	}
+	alice, bob := person("alice"), person("bob")
+	enrolledMachine(t, alice)
+	alice.request("GET", "/publications", nil)
+	created := alice.request("POST", "/publications", url.Values{"machine_id": {"1"}, "subdomain": {"aliceapp"}, "target": {"127.0.0.1:8080"}})
+	if created.Code != 201 {
+		t.Fatal(created.Code)
+	}
+	var p PublicationResult
+	json.Unmarshal(created.Body.Bytes(), &p)
+	bob.request("GET", "/publications", nil)
+	if w := bob.request("POST", "/publications", url.Values{"machine_id": {"1"}, "subdomain": {"stolen"}, "target": {"127.0.0.1:8080"}}); w.Code != 404 {
+		t.Fatalf("foreign machine publish: %d", w.Code)
+	}
+	if w := bob.request("GET", "/publications/"+p.ID, nil); w.Code != 404 {
+		t.Fatalf("foreign publication read: %d", w.Code)
+	}
+	if w := bob.request("POST", "/publications/"+p.ID+"/retry", nil); w.Code != 404 {
+		t.Fatalf("foreign publication mutation: %d", w.Code)
+	}
+	if w := bob.request("GET", "/publications", nil); strings.Contains(w.Body.String(), "aliceapp") {
+		t.Fatal("foreign publication leaked in list")
+	}
+	if w := admin.request("GET", "/publications", nil); !strings.Contains(w.Body.String(), "aliceapp") || !strings.Contains(w.Body.String(), "alice") {
+		t.Fatal("admin cannot inspect publication owner")
+	}
 }

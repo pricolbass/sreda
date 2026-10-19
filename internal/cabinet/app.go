@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sreda/internal/publication"
 	"strings"
 	"time"
 
@@ -28,7 +29,7 @@ type App struct {
 	host         string
 	pages        *template.Template
 	machines     machineRuntime
-	publications publicationRuntime
+	publications *publication.Module
 }
 
 // Open creates the state directory and schema on first use. The origin is saved
@@ -65,6 +66,11 @@ func Open(dataDir, origin string) (*App, error) {
 	db.SetMaxOpenConns(1)
 	app := &App{db: db}
 	if err := app.initialize(origin); err != nil {
+		db.Close()
+		return nil, err
+	}
+	app.publications, err = publication.New(db, app.host, publication.AgentTransport{})
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -124,7 +130,7 @@ func (a *App) initialize(origin string) error {
 		return err
 	}
 
-	if err := installPublicationSchema(tx); err != nil {
+	if err := publication.InstallSchema(tx); err != nil {
 		return err
 	}
 	var saved string
@@ -150,20 +156,15 @@ func (a *App) initialize(origin string) error {
 		return err
 	}
 	a.origin, a.host = origin, u.Host
-	if err := a.db.QueryRow("SELECT value FROM settings WHERE key='publication_zone'").Scan(&a.publications.zone); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
 	return nil
 }
 
 func (a *App) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	a.publications.mu.Lock()
-	for id := range a.publications.routes {
-		_ = a.closePublicationLocked(ctx, id)
+	if a.publications != nil {
+		_ = a.publications.Close(ctx)
 	}
-	a.publications.mu.Unlock()
 	return a.db.Close()
 }
 
