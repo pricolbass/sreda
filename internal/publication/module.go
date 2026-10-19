@@ -99,10 +99,14 @@ func (m *Module) ConfigureZone(ctx context.Context, zone string) error {
 	if saved != "" && saved != zone {
 		return fail(Conflict, "доменная зона отличается от сохранённой")
 	}
-	if err = m.store.saveZone(ctx, zone); err != nil {
+	actual, err := m.store.saveZone(ctx, zone)
+	if err != nil {
 		return err
 	}
-	m.zone = zone
+	if actual != zone {
+		return fail(Conflict, "доменная зона отличается от сохранённой")
+	}
+	m.zone = actual
 	return nil
 }
 func (m *Module) SetDialer(dial func(context.Context, string, string) (net.Conn, error)) {

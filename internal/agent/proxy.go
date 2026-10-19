@@ -47,8 +47,6 @@ func NewProxy(gatewayIP string) *Proxy {
 	return &Proxy{gatewayIP: gatewayIP, routes: make(map[string]*proxyRoute)}
 }
 
-// ValidateTarget limits first-version agent publications to literal loopback endpoints.
-// DNS and LAN addresses are intentionally unavailable to avoid cross-machine publication.
 // ValidateTargetSyntax validates literal endpoints without assuming this host owns the IP.
 func ValidateTargetSyntax(target string) error { return agentprotocol.ValidateTarget(target) }
 

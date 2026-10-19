@@ -24,9 +24,11 @@ func (s *sqliteStore) zone(ctx context.Context) (string, error) {
 	}
 	return zone, err
 }
-func (s *sqliteStore) saveZone(ctx context.Context, zone string) error {
-	_, err := s.db.ExecContext(ctx, "INSERT OR IGNORE INTO settings(key,value) VALUES('publication_zone',?)", zone)
-	return err
+func (s *sqliteStore) saveZone(ctx context.Context, zone string) (string, error) {
+	if _, err := s.db.ExecContext(ctx, "INSERT OR IGNORE INTO settings(key,value) VALUES('publication_zone',?)", zone); err != nil {
+		return "", err
+	}
+	return s.zone(ctx)
 }
 
 const columns = `p.id,p.machine_id,p.subdomain,p.target,p.state,p.error,p.revision,u.login`

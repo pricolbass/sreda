@@ -167,10 +167,11 @@ func (a *App) initialize(origin string) error {
 func (a *App) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	var closeError error
 	if a.publications != nil {
-		_ = a.publications.Close(ctx)
+		closeError = a.publications.Close(ctx)
 	}
-	return a.db.Close()
+	return errors.Join(closeError, a.db.Close())
 }
 
 // CreateAdministrator is available only to the local CLI, never over HTTP.
