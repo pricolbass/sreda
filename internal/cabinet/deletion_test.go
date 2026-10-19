@@ -337,3 +337,114 @@ func TestDeletionWaitsForConcurrentEnrollmentCleanupBeforeFreeingMachine(t *test
 		t.Fatalf("enrollment cleanup did not unblock deletion: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestFreedNameReachesNewOwnerAndOldAgentRejectsDeletedID(t *testing.T) {
+	app, owner, _ := setup(t)
+	app.SetGateway(testGateway{})
+	app.ConfigurePublicationZone("example.test")
+	owner.login()
+	ownerCredential := enrolledMachine(t, owner)
+	oldApplication := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "old-owner") }))
+	defer oldApplication.Close()
+	newApplication := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "new-owner") }))
+	defer newApplication.Close()
+	oldProxy, newProxy := agent.NewProxy("127.0.0.1"), agent.NewProxy("127.0.0.1")
+	defer oldProxy.Close()
+	defer newProxy.Close()
+	oldAgent, newAgent := httptest.NewServer(oldProxy), httptest.NewServer(newProxy)
+	defer oldAgent.Close()
+	defer newAgent.Close()
+	app.SetPublicationDialer(func(ctx context.Context, network, address string) (net.Conn, error) {
+		destination := oldAgent.Listener.Addr().String()
+		if address == "10.203.0.3:9080" {
+			destination = newAgent.Listener.Addr().String()
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, destination)
+	})
+	original := lifecyclePublication(t, owner, "shared", strings.TrimPrefix(oldApplication.URL, "http://"))
+	lifecyclePublication(t, owner, "other", strings.TrimPrefix(oldApplication.URL, "http://"))
+	var oldControl agentprotocol.Control
+	json.Unmarshal(agentContact(t, owner, ownerCredential, `{"ready":true,"applied_generation":0}`).Body.Bytes(), &oldControl)
+	if err := oldProxy.ApplyControl(oldControl); err != nil {
+		t.Fatal(err)
+	}
+	agentContact(t, owner, ownerCredential, `{"ready":true,"applied_generation":2}`)
+	link := invitation(t, owner, "24h")
+	bob := visitor(t, owner)
+	if status := accept(t, bob, link, "bob"); status != 303 {
+		t.Fatal(status)
+	}
+	bob.request("GET", "/login", nil)
+	if w := bob.request("POST", "/login", url.Values{"login": {"bob"}, "password": {password}}); w.Code != 303 {
+		t.Fatal(w.Code)
+	}
+	bob.request("GET", "/machines", nil)
+	created := bob.request("POST", "/machines", url.Values{"name": {"Bob machine"}})
+	var code struct {
+		Code string `json:"code"`
+	}
+	json.Unmarshal(created.Body.Bytes(), &code)
+	bobCredential := strings.Repeat("b", 43)
+	enroll := httptest.NewRequest("POST", origin+"/api/agent/enroll", strings.NewReader(`{"code":"`+code.Code+`","public_key":"AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","credential":"`+bobCredential+`"}`))
+	enroll.Header.Set("Content-Type", "application/json")
+	enrolled := httptest.NewRecorder()
+	bob.handler.ServeHTTP(enrolled, enroll)
+	if enrolled.Code != 201 {
+		t.Fatalf("second owner enrollment: %d %s", enrolled.Code, enrolled.Body.String())
+	}
+	owner.request("GET", "/publications", nil)
+	if w := owner.request("POST", "/publications/"+original.ID+"/delete", url.Values{"revision": {"1"}, "confirm_name": {"shared"}}); w.Code != 202 {
+		t.Fatal(w.Code)
+	}
+	json.Unmarshal(agentContact(t, owner, ownerCredential, `{"ready":true,"applied_generation":2}`).Body.Bytes(), &oldControl)
+	if err := oldProxy.ApplyControl(oldControl); err != nil {
+		t.Fatal(err)
+	}
+	agentContact(t, owner, ownerCredential, `{"ready":true,"applied_generation":3}`)
+	direct := httptest.NewRequest("GET", "http://old-agent/", nil)
+	direct.RemoteAddr = "127.0.0.1:1234"
+	direct.Header.Set("X-Sreda-Proxy-Token", oldControl.ProxyToken)
+	direct.Header.Set("X-Sreda-Publication", original.ID)
+	refused := httptest.NewRecorder()
+	oldProxy.ServeHTTP(refused, direct)
+	if refused.Code != 404 {
+		t.Fatalf("deleted ID accepted by agent: %d", refused.Code)
+	}
+	bob.request("GET", "/publications", nil)
+	replacementResponse := bob.request("POST", "/publications", url.Values{"machine_id": {"2"}, "subdomain": {"shared"}, "target": {strings.TrimPrefix(newApplication.URL, "http://")}})
+	if replacementResponse.Code != 201 {
+		t.Fatalf("new owner cannot reuse freed name: %d %s", replacementResponse.Code, replacementResponse.Body.String())
+	}
+	var replacement PublicationResult
+	json.Unmarshal(replacementResponse.Body.Bytes(), &replacement)
+	if replacement.ID == original.ID {
+		t.Fatal("opaque publication ID reused")
+	}
+	var newControl agentprotocol.Control
+	json.Unmarshal(agentContact(t, bob, bobCredential, `{"ready":true,"applied_generation":0}`).Body.Bytes(), &newControl)
+	if err := newProxy.ApplyControl(newControl); err != nil {
+		t.Fatal(err)
+	}
+	agentContact(t, bob, bobCredential, `{"ready":true,"applied_generation":1}`)
+	gateway := httptest.NewTLSServer(app.Handler())
+	defer gateway.Close()
+	for host, expected := range map[string]string{"shared.example.test": "new-owner", "other.example.test": "old-owner"} {
+		request, _ := http.NewRequest("GET", gateway.URL+"/", nil)
+		request.Host = host
+		response, err := gateway.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != 200 || string(body) != expected {
+			t.Fatalf("name routed to wrong owner: %s %d %s", host, response.StatusCode, body)
+		}
+	}
+	if w := owner.request("POST", "/publications/"+replacement.ID+"/delete", url.Values{"revision": {"1"}, "confirm_name": {"shared"}}); w.Code != 404 {
+		t.Fatalf("old owner can delete replacement: %d", w.Code)
+	}
+	if w := bob.request("POST", "/machines/1/delete", nil); w.Code != 404 {
+		t.Fatalf("foreign machine deletion: %d", w.Code)
+	}
+}

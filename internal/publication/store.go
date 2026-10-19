@@ -238,6 +238,11 @@ func (s *sqliteStore) acknowledge(ctx context.Context, machineID int64, ack Ackn
 			return err
 		}
 	}
+	if plan.Failed {
+		if _, err = tx.ExecContext(ctx, `UPDATE publications SET state='Удаляется',error=? WHERE machine_id=? AND EXISTS(SELECT 1 FROM publication_deletions d WHERE d.publication_id=publications.id AND d.removal_generation<=?)`, ack.Error, machineID, ack.Failed); err != nil {
+			return err
+		}
+	}
 	if err = finalizeDeletions(ctx, tx, machineID); err != nil {
 		return err
 	}

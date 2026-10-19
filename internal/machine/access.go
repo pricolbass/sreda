@@ -2,6 +2,7 @@ package machine
 
 import (
 	"context"
+	"errors"
 	"sreda/internal/tunnel"
 	"time"
 )
@@ -72,10 +73,11 @@ func (m *Manager) reconcileConnectionOperations(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var failures []error
 	for _, op := range operations {
 		if err = m.cleanupConnectionOperation(ctx, op); err != nil {
-			return err
+			failures = append(failures, err)
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
