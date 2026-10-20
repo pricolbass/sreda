@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"sreda/internal/access"
 	"sreda/internal/agentcontrol"
 	"sreda/internal/identity"
 	"sreda/internal/machine"
@@ -23,6 +24,7 @@ import (
 )
 
 type App struct {
+	access       *access.Controller
 	identity     *identity.Manager
 	db           *sql.DB
 	origin       string
@@ -78,7 +80,8 @@ func Open(dataDir, origin string) (*App, error) {
 	app.machines = machine.New(db)
 	app.publications.SetContactObserver(app.machines)
 	app.agentControl = agentcontrol.New(app.machines, app.publications)
-	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates + recoveryTemplates)
+	app.access = access.New(app.identity, app.publications, app.machines)
+	app.pages, err = template.New("pages").Parse(pageTemplates + invitationTemplates + recoveryTemplates + accessTemplates)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -96,7 +99,7 @@ func (a *App) initialize(origin string) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 3 {
+	if version > 4 {
 		return errors.New("версия базы новее приложения")
 	}
 	if version == 0 {
@@ -127,6 +130,11 @@ func (a *App) initialize(origin string) error {
 	}
 	if version < 3 {
 		if err := installPasswordRecovery(tx); err != nil {
+			return err
+		}
+	}
+	if version < 4 {
+		if _, err := tx.Exec(`ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0; ALTER TABLE users ADD COLUMN access_revision INTEGER NOT NULL DEFAULT 1; ALTER TABLE users ADD COLUMN access_state TEXT NOT NULL DEFAULT 'Вход разрешён'; ALTER TABLE users ADD COLUMN access_error TEXT NOT NULL DEFAULT ''; PRAGMA user_version=4;`); err != nil {
 			return err
 		}
 	}

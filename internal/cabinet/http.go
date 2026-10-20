@@ -27,6 +27,7 @@ func (a *App) Handler() http.Handler {
 	a.registerMachineRoutes(mux)
 	a.registerInvitationRoutes(mux)
 	a.registerPasswordRecoveryRoutes(mux)
+	a.registerAccessRoutes(mux)
 	return a.publications.Wrap(a.protect(mux))
 }
 

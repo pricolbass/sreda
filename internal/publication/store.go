@@ -108,7 +108,7 @@ func (s *sqliteStore) schedule(ctx context.Context, input CreateRequest, decide 
 	defer tx.Rollback()
 	var machine machineEligibility
 	var key sql.NullString
-	err = tx.QueryRowContext(ctx, "SELECT m.id,m.owner_id,m.enabled,m.public_key,u.login,m.mode,COALESCE(m.tunnel_address,''),COALESCE(m.proxy_token,'') FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=?", input.MachineID).Scan(&machine.ID, &machine.OwnerID, &machine.Enabled, &key, &machine.Login, &machine.Mode, &machine.Address, &machine.ProxyToken)
+	err = tx.QueryRowContext(ctx, "SELECT m.id,m.owner_id,m.enabled,m.public_key,u.login,m.mode,COALESCE(m.tunnel_address,''),COALESCE(m.proxy_token,'') FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=? AND u.blocked=0", input.MachineID).Scan(&machine.ID, &machine.OwnerID, &machine.Enabled, &key, &machine.Login, &machine.Mode, &machine.Address, &machine.ProxyToken)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Publication{}, false, err
 	}
@@ -160,7 +160,7 @@ func (s *sqliteStore) retry(ctx context.Context, id, nextState string, decide fu
 	}
 	defer tx.Rollback()
 	var candidate retryCandidate
-	err = tx.QueryRowContext(ctx, `SELECT m.owner_id,p.machine_id,p.state,p.desired_enabled,m.enabled FROM publications p JOIN machines m ON m.id=p.machine_id WHERE p.id=?`, id).Scan(&candidate.OwnerID, &candidate.MachineID, &candidate.State, &candidate.Desired, &candidate.Enabled)
+	err = tx.QueryRowContext(ctx, `SELECT m.owner_id,p.machine_id,p.state,p.desired_enabled,m.enabled FROM publications p JOIN machines m ON m.id=p.machine_id WHERE p.id=? AND EXISTS(SELECT 1 FROM users u WHERE u.id=m.owner_id AND u.blocked=0)`, id).Scan(&candidate.OwnerID, &candidate.MachineID, &candidate.State, &candidate.Desired, &candidate.Enabled)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -179,12 +179,15 @@ func (s *sqliteStore) retry(ctx context.Context, id, nextState string, decide fu
 	}
 	return tx.Commit()
 }
-func (s *sqliteStore) control(ctx context.Context, machineID int64) (uint64, []agentprotocol.Route, error) {
+func (s *sqliteStore) control(ctx context.Context, machineID int64, ownerRevision int64) (uint64, []agentprotocol.Route, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer tx.Rollback()
+	if err := activeMachine(ctx, tx, machineID, ownerRevision); err != nil {
+		return 0, nil, err
+	}
 	var generation uint64
 	err = tx.QueryRowContext(ctx, "SELECT generation FROM machine_control WHERE machine_id=?", machineID).Scan(&generation)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -211,12 +214,15 @@ type acknowledgmentPlan struct {
 	ReadyState, FailedState string
 }
 
-func (s *sqliteStore) acknowledge(ctx context.Context, machineID int64, ack Acknowledgment, decide func(uint64, uint64) (acknowledgmentPlan, error)) error {
+func (s *sqliteStore) acknowledge(ctx context.Context, machineID int64, ack Acknowledgment, decide func(uint64, uint64) (acknowledgmentPlan, error), ownerRevision int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := activeMachine(ctx, tx, machineID, ownerRevision); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO machine_control(machine_id) VALUES(?)", machineID); err != nil {
 		return err
 	}
@@ -255,7 +261,7 @@ func (s *sqliteStore) acknowledge(ctx context.Context, machineID int64, ack Ackn
 func (s *sqliteStore) connection(ctx context.Context, label string) (Connection, error) {
 	var c Connection
 	var last sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.state,p.desired_enabled,m.id,m.enabled,m.tunnel_address,m.proxy_token,m.last_seen,p.target,m.mode FROM publications p JOIN machines m ON m.id=p.machine_id WHERE p.subdomain=?`, label).Scan(&c.ID, &c.State, &c.Desired, &c.MachineID, &c.Enabled, &c.Address, &c.ProxyToken, &last, &c.Target, &c.Mode)
+	err := s.db.QueryRowContext(ctx, `SELECT p.id,p.state,p.desired_enabled,m.id,m.enabled,m.tunnel_address,m.proxy_token,m.last_seen,p.target,m.mode FROM publications p JOIN machines m ON m.id=p.machine_id WHERE p.subdomain=? AND EXISTS(SELECT 1 FROM users u WHERE u.id=m.owner_id AND u.blocked=0)`, label).Scan(&c.ID, &c.State, &c.Desired, &c.MachineID, &c.Enabled, &c.Address, &c.ProxyToken, &last, &c.Target, &c.Mode)
 	if last.Valid {
 		c.LastSeen = last.Int64
 	}
@@ -263,4 +269,14 @@ func (s *sqliteStore) connection(ctx context.Context, label string) (Connection,
 		return c, fail(NotFound, "Публикация не найдена")
 	}
 	return c, err
+}
+
+func activeMachine(ctx context.Context, tx *sql.Tx, machineID int64, ownerRevision int64) error {
+	expected := ownerRevision
+	var id int64
+	err := tx.QueryRowContext(ctx, `SELECT m.id FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=? AND m.enabled=1 AND u.blocked=0 AND u.access_revision=?`, machineID, expected).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fail(Unavailable, "Подключение отключено или отозвано")
+	}
+	return err
 }

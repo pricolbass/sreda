@@ -25,7 +25,7 @@ func (s sqliteStore) createAdministrator(ctx context.Context, login string, hash
 func (s sqliteStore) credentials(ctx context.Context, login string) (int64, []byte, error) {
 	var id int64
 	var hash []byte
-	err := s.db.QueryRowContext(ctx, `SELECT id,password_hash FROM users WHERE login=?`, login).Scan(&id, &hash)
+	err := s.db.QueryRowContext(ctx, `SELECT id,password_hash FROM users WHERE login=? AND blocked=0`, login).Scan(&id, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil, nil
 	}
@@ -47,7 +47,7 @@ func (s sqliteStore) rotateSession(ctx context.Context, id int64, hash []byte, o
 	}
 	// Recheck the password inside the same write transaction as session creation.
 	// A password reset that won the race must not be undone by a stale login.
-	result, err := tx.ExecContext(ctx, `INSERT INTO sessions(token_hash,user_id,expires_at) SELECT ?,id,? FROM users WHERE id=? AND password_hash=?`, tokenHash(next), expiry, id, hash)
+	result, err := tx.ExecContext(ctx, `INSERT INTO sessions(token_hash,user_id,expires_at) SELECT ?,id,? FROM users WHERE id=? AND password_hash=? AND blocked=0`, tokenHash(next), expiry, id, hash)
 	if err != nil {
 		return err
 	}
@@ -62,7 +62,7 @@ func (s sqliteStore) rotateSession(ctx context.Context, id int64, hash []byte, o
 }
 func (s sqliteStore) sessionUser(ctx context.Context, token string, now int64) (User, error) {
 	var user User
-	err := s.db.QueryRowContext(ctx, `SELECT users.id,users.login,users.role FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>?`, tokenHash(token), now).Scan(&user.ID, &user.Login, &user.Role)
+	err := s.db.QueryRowContext(ctx, `SELECT users.id,users.login,users.role FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.token_hash=? AND sessions.expires_at>? AND users.blocked=0`, tokenHash(token), now).Scan(&user.ID, &user.Login, &user.Role)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, Unauthenticated
 	}

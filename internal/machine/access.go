@@ -21,8 +21,25 @@ func (m *Manager) SetEnabled(ctx context.Context, id int64, enabled bool) error 
 	}
 	return m.changeConnection(ctx, id, enabled, false)
 }
-func (m *Manager) changeConnection(ctx context.Context, id int64, enabled, requireEnabled bool) error {
-	op, err := m.store.reserveConnectionOperation(ctx, id, enabled, token(), time.Now(), requireEnabled)
+
+type accessCommand struct {
+	actor    Actor
+	revision int64
+}
+
+func (m *Manager) ChangeAccess(ctx context.Context, actor Actor, id, revision int64, enabled bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if revision < 1 {
+		return failure(Invalid, "Обновите страницу: отсутствует версия подключения")
+	}
+	if m.gateway == nil {
+		return failure(Unavailable, "Сетевой шлюз не настроен")
+	}
+	return m.changeConnection(ctx, id, enabled, false, accessCommand{actor, revision})
+}
+func (m *Manager) changeConnection(ctx context.Context, id int64, enabled, requireEnabled bool, command ...accessCommand) error {
+	op, err := m.store.reserveConnectionOperation(ctx, id, enabled, token(), time.Now(), requireEnabled, command...)
 	if err != nil {
 		return err
 	}

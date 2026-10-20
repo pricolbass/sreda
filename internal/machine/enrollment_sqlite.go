@@ -23,7 +23,7 @@ func (s *sqliteStore) reserveEnrollment(ctx context.Context, input EnrollInput, 
 	}
 	defer tx.Rollback()
 	var expiry int64
-	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,code_expires_at,mode FROM machines WHERE code_hash=? AND credential_hash IS NULL`, hash(input.Code)).Scan(&intent.connection.ID, &intent.connection.OwnerID, &expiry, &intent.connection.Mode)
+	err = tx.QueryRowContext(ctx, `SELECT m.id,m.owner_id,m.code_expires_at,m.mode,u.access_revision FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.code_hash=? AND m.credential_hash IS NULL AND u.blocked=0`, hash(input.Code)).Scan(&intent.connection.ID, &intent.connection.OwnerID, &expiry, &intent.connection.Mode, &intent.connection.OwnerRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return intent, failure(Unauthorized, "Код недействителен или уже использован")
 	}
@@ -107,7 +107,7 @@ func (s *sqliteStore) finalizeEnrollment(ctx context.Context, intent enrollmentI
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE machines SET code_hash=NULL,code_expires_at=NULL,credential_hash=?,public_key=?,tunnel_address=?,proxy_token=?,enabled=1 WHERE id=? AND code_hash=? AND credential_hash IS NULL AND EXISTS(SELECT 1 FROM machine_enrollments WHERE machine_id=? AND lease_owner=? AND phase='applying' AND lease_until>?)`, intent.credentialHash, intent.connection.PublicKey, intent.connection.Address, intent.connection.ProxyToken, intent.connection.ID, intent.codeHash, intent.connection.ID, intent.owner, now)
+	result, err := tx.ExecContext(ctx, `UPDATE machines SET code_hash=NULL,code_expires_at=NULL,credential_hash=?,public_key=?,tunnel_address=?,proxy_token=?,enabled=1,desired_enabled=1,access_state='Подключено',access_error='' WHERE id=? AND code_hash=? AND credential_hash IS NULL AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?) AND EXISTS(SELECT 1 FROM machine_enrollments WHERE machine_id=? AND lease_owner=? AND phase='applying' AND lease_until>?)`, intent.credentialHash, intent.connection.PublicKey, intent.connection.Address, intent.connection.ProxyToken, intent.connection.ID, intent.codeHash, intent.connection.OwnerRevision, intent.connection.ID, intent.owner, now)
 	if err != nil {
 		return err
 	}

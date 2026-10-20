@@ -85,7 +85,7 @@ func (s *sqliteStore) reserveDeletion(ctx context.Context, id int64, owner strin
 	if _, err = tx.ExecContext(ctx, `INSERT INTO machine_deletions(machine_id,lease_owner,lease_until,last_attempt) VALUES(?,?,?,?) ON CONFLICT(machine_id) DO UPDATE SET lease_owner=excluded.lease_owner,lease_until=excluded.lease_until,last_attempt=excluded.last_attempt`, id, owner, now.Add(enrollmentLease).Unix(), now.Unix()); err != nil {
 		return intent, false, err
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=0,credential_hash=NULL,code_hash=NULL,code_expires_at=NULL WHERE id=?", id); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=0,desired_enabled=0,access_revision=access_revision+1,credential_hash=NULL,code_hash=NULL,code_expires_at=NULL WHERE id=?", id); err != nil {
 		return intent, false, err
 	}
 	var enrollment enrollmentIntent
