@@ -16,7 +16,7 @@ func (a *App) manualPublicKey(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	params, err := a.machines.EnrollManual(r.Context(), machineActor(u), id, r.PostForm.Get("code"), r.PostForm.Get("public_key"))
+	params, err := a.agentControl.EnrollManual(r.Context(), machineActor(u), id, r.PostForm.Get("code"), r.PostForm.Get("public_key"))
 	if err != nil {
 		a.machineError(w, err)
 		return

@@ -190,12 +190,12 @@ func (m *Module) Retry(ctx context.Context, actor Actor, id string) error {
 		return candidate.State == "Ошибка", nil
 	})
 }
-func (m *Module) Control(ctx context.Context, machineID int64, ownerRevision int64) (uint64, []agentprotocol.Route, error) {
+func (m *Module) Control(ctx context.Context, identity agentprotocol.ConnectionIdentity) (uint64, []agentprotocol.Route, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.store.control(ctx, machineID, ownerRevision)
+	return m.store.control(ctx, identity)
 }
-func (m *Module) Acknowledge(ctx context.Context, machineID int64, ack Acknowledgment, ownerRevision int64) error {
+func (m *Module) Acknowledge(ctx context.Context, identity agentprotocol.ConnectionIdentity, ack Acknowledgment) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ack.Applied > 1<<62 || ack.Failed > 1<<62 {
@@ -207,12 +207,12 @@ func (m *Module) Acknowledge(ctx context.Context, machineID int64, ack Acknowled
 	if ack.Error == "" {
 		ack.Error = "Агент не подтвердил применение маршрутов"
 	}
-	return m.store.acknowledge(ctx, machineID, ack, func(generation, previous uint64) (acknowledgmentPlan, error) {
+	return m.store.acknowledge(ctx, identity, ack, func(generation, previous uint64) (acknowledgmentPlan, error) {
 		if ack.Applied > generation || ack.Failed > generation {
 			return acknowledgmentPlan{}, fail(Conflict, "неизвестная версия маршрутов")
 		}
 		return acknowledgmentPlan{Ready: ack.Applied >= previous, Failed: ack.Failed > ack.Applied && ack.Failed > previous && ack.Failed == generation, ReadyState: "Настроена", FailedState: "Ошибка"}, nil
-	}, ownerRevision)
+	})
 }
 func (m *Module) url(label string) string {
 	host := label + "." + m.zone

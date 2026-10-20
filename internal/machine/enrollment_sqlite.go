@@ -23,7 +23,7 @@ func (s *sqliteStore) reserveEnrollment(ctx context.Context, input EnrollInput, 
 	}
 	defer tx.Rollback()
 	var expiry int64
-	err = tx.QueryRowContext(ctx, `SELECT m.id,m.owner_id,m.code_expires_at,m.mode,u.access_revision FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.code_hash=? AND m.credential_hash IS NULL AND u.blocked=0`, hash(input.Code)).Scan(&intent.connection.ID, &intent.connection.OwnerID, &expiry, &intent.connection.Mode, &intent.connection.OwnerRevision)
+	err = tx.QueryRowContext(ctx, `SELECT m.id,m.owner_id,m.code_expires_at,m.mode,u.access_revision,m.access_revision,m.desired_enabled,COALESCE(m.tunnel_address,'') FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.code_hash=? AND m.credential_hash IS NULL AND u.blocked=0`, hash(input.Code)).Scan(&intent.connection.ID, &intent.connection.OwnerID, &expiry, &intent.connection.Mode, &intent.connection.OwnerRevision, &intent.connection.Revision, &intent.connection.DesiredEnabled, &intent.connection.Address)
 	if errors.Is(err, sql.ErrNoRows) {
 		return intent, failure(Unauthorized, "Код недействителен или уже использован")
 	}
@@ -62,7 +62,7 @@ func (s *sqliteStore) reserveEnrollment(ctx context.Context, input EnrollInput, 
 	if count > 0 {
 		return intent, failure(Invalid, "Этот публичный ключ уже закреплён за другой машиной")
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT tunnel_address FROM machines WHERE tunnel_address IS NOT NULL UNION SELECT tunnel_address FROM machine_enrollments`)
+	rows, err := tx.QueryContext(ctx, `SELECT tunnel_address FROM machines WHERE tunnel_address IS NOT NULL AND id!=? UNION SELECT tunnel_address FROM machine_enrollments`, intent.connection.ID)
 	if err != nil {
 		return intent, err
 	}
@@ -80,10 +80,12 @@ func (s *sqliteStore) reserveEnrollment(ctx context.Context, input EnrollInput, 
 	if err != nil {
 		return intent, err
 	}
-	for _, address := range pool {
-		if !used[address] {
-			intent.connection.Address = address
-			break
+	if intent.connection.Address == "" {
+		for _, address := range pool {
+			if !used[address] {
+				intent.connection.Address = address
+				break
+			}
 		}
 	}
 	if intent.connection.Address == "" {
@@ -107,7 +109,7 @@ func (s *sqliteStore) finalizeEnrollment(ctx context.Context, intent enrollmentI
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE machines SET code_hash=NULL,code_expires_at=NULL,credential_hash=?,public_key=?,tunnel_address=?,proxy_token=?,enabled=1,desired_enabled=1,access_state='Подключено',access_error='' WHERE id=? AND code_hash=? AND credential_hash IS NULL AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?) AND EXISTS(SELECT 1 FROM machine_enrollments WHERE machine_id=? AND lease_owner=? AND phase='applying' AND lease_until>?)`, intent.credentialHash, intent.connection.PublicKey, intent.connection.Address, intent.connection.ProxyToken, intent.connection.ID, intent.codeHash, intent.connection.OwnerRevision, intent.connection.ID, intent.owner, now)
+	result, err := tx.ExecContext(ctx, `UPDATE machines SET code_hash=NULL,code_expires_at=NULL,credential_hash=?,public_key=?,tunnel_address=?,proxy_token=?,enabled=?,access_state=?,access_error='' WHERE id=? AND code_hash=? AND credential_hash IS NULL AND access_revision=? AND desired_enabled=? AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?) AND EXISTS(SELECT 1 FROM machine_enrollments WHERE machine_id=? AND lease_owner=? AND phase='applying' AND lease_until>?)`, intent.credentialHash, intent.connection.PublicKey, intent.connection.Address, intent.connection.ProxyToken, intent.connection.DesiredEnabled, map[bool]string{true: "Подключено", false: "Отключено"}[intent.connection.DesiredEnabled], intent.connection.ID, intent.codeHash, intent.connection.Revision, intent.connection.DesiredEnabled, intent.connection.OwnerRevision, intent.connection.ID, intent.owner, now)
 	if err != nil {
 		return err
 	}
