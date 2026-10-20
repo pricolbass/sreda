@@ -22,8 +22,17 @@ func (m *Module) DisableOwner(ctx context.Context, ownerID int64) error {
 		}
 	}
 	m.mu.Unlock()
+	// Initiate every closure before waiting: one blocked downstream must not
+	// prevent cancellation of the other publications when the phase budget ends.
+	for _, route := range routes {
+		route.cancelActive()
+	}
 	var failures []error
 	for _, p := range pubs {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
 		closeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		var closeErr error
 		if r := routes[p.ID]; r != nil {

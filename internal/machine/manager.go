@@ -205,6 +205,10 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	}
 	var failures []error
 	for _, intent := range intents {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
 		cleanupCtx, cancel := context.WithTimeout(ctx, enrollmentCleanupTimeout)
 		err := m.cleanupEnrollment(cleanupCtx, intent, enrollmentCleanupTimeout)
 		cancel()

@@ -140,7 +140,7 @@ func (r *publicationRoute) admit(ctx context.Context, abort func()) (context.Con
 // stopAdmission is quick and runs under the module lifecycle lock; draining is outside it.
 func (r *publicationRoute) stopAdmission() { r.mu.Lock(); r.closed = true; r.mu.Unlock() }
 
-func (r *publicationRoute) closeAndWait(ctx context.Context) error {
+func (r *publicationRoute) cancelActive() {
 	r.mu.Lock()
 	r.closed = true
 	admissions := make([]publicationAdmission, 0, len(r.requests))
@@ -164,6 +164,9 @@ func (r *publicationRoute) closeAndWait(ctx context.Context) error {
 	for _, c := range connections {
 		c.Close()
 	}
+}
+func (r *publicationRoute) closeAndWait(ctx context.Context) error {
+	r.cancelActive()
 	select {
 	case <-r.drained:
 		return nil

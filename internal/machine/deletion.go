@@ -88,6 +88,10 @@ func (m *Manager) reconcileDeletions(ctx context.Context) error {
 	}
 	var failures []string
 	for _, candidate := range candidates {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err().Error())
+			break
+		}
 		intent, done, err := m.store.reserveDeletion(ctx, candidate.ID, token(), time.Now(), func(deletionCandidate) error { return nil })
 		if err == nil && !done {
 			_, err = m.cleanupDeletion(ctx, intent)

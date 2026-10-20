@@ -93,6 +93,7 @@ WireGuard, Debian LXC и внешняя сеть этим прогоном не 
 - [Приглашения](docs/invitations.md) и [восстановление пароля](docs/password-recovery.md)
 - [Агент Debian LXC](docs/agent.md) и [сетевой helper](docs/network-helper.md)
 - [Публикации и отключение доступа](docs/publications.md)
+- [Восстановление после потери связи и перезапуска](docs/restart-recovery.md)
 - [Развёртывание и внешняя приёмка](docs/deployment.md)
 
 Обычный локальный запуск выше позволяет проверить кабинет и ссылки; для
