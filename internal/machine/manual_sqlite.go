@@ -39,7 +39,7 @@ func InstallManualSchema(tx *sql.Tx) error {
 }
 
 func (s *sqliteStore) createWithMode(ctx context.Context, ownerID int64, name string, mode Mode, code []byte, expiry, created int64) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO machines(id,owner_id,name,code_hash,code_expires_at,created_at,mode)SELECT (SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM machines UNION ALL SELECT id FROM machine_tombstones)),?,?,?,?,?,? FROM users WHERE id=? AND blocked=0`, ownerID, name, code, expiry, created, mode, ownerID)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO machines(id,owner_id,name,code_hash,code_expires_at,created_at,mode,desired_enabled,access_state)SELECT (SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM machines UNION ALL SELECT id FROM machine_tombstones)),?,?,?,?,?,?,1,'Ожидает подключения' FROM users WHERE id=? AND blocked=0`, ownerID, name, code, expiry, created, mode, ownerID)
 	if err != nil {
 		return 0, err
 	}
@@ -76,7 +76,7 @@ func (s *sqliteStore) recordHandshake(ctx context.Context, c Connection, latest 
 	if !latest.IsZero() {
 		seen = latest.Unix()
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE machines SET last_seen=? WHERE id=? AND mode='manual' AND public_key=? AND enabled=1 AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?)`, seen, c.ID, c.PublicKey, c.OwnerRevision)
+	result, err := s.db.ExecContext(ctx, `UPDATE machines SET last_seen=? WHERE id=? AND mode='manual' AND public_key=? AND enabled=1 AND access_revision=? AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?)`, seen, c.ID, c.PublicKey, c.Revision, c.OwnerRevision)
 	if err != nil {
 		return err
 	}

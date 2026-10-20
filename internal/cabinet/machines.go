@@ -35,6 +35,9 @@ func installMachineSchema(tx *sql.Tx) error {
 	if err := machine.InstallAccessSchema(tx); err != nil {
 		return err
 	}
+	if err := machine.InstallReconnectionSchema(tx); err != nil {
+		return err
+	}
 	return machine.InstallRecoverySchema(tx)
 }
 

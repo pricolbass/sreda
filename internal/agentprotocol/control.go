@@ -23,3 +23,7 @@ type Acknowledgment struct {
 	Failed  uint64
 	Error   string
 }
+
+// ConnectionIdentity is an internal authorization snapshot, never a bearer token.
+// Every route/contact transaction checks both revisions against current SQLite.
+type ConnectionIdentity struct{ MachineID, Revision, OwnerRevision int64 }

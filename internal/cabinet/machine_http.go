@@ -19,6 +19,7 @@ func (a *App) registerMachineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /machines", a.machinePage)
 	mux.HandleFunc("POST /machines", a.createMachine)
 	mux.HandleFunc("GET /machines/{id}", a.machineDetail)
+	mux.HandleFunc("POST /machines/{id}/reconnect", a.reconnectMachine)
 	mux.HandleFunc("POST /machines/{id}/enable", a.enableMachine)
 	mux.HandleFunc("POST /machines/{id}/disable", a.disableMachine)
 	mux.HandleFunc("GET /machines/{id}/setup-prompt", a.machineSetupPrompt)
@@ -28,12 +29,13 @@ func (a *App) registerMachineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /machines/{id}/wireguard", a.manualPublicKey)
 	mux.HandleFunc("POST /api/agent/enroll", a.enrollMachine)
 	mux.HandleFunc("POST /api/agent/heartbeat", a.machineHeartbeat)
+	mux.HandleFunc("POST /api/agent/recover", a.recoverAgentState)
 }
 
 type machineView struct {
 	Revision                                                int64
 	ConnectionState, ConnectionError                        string
-	CanEnable, CanDisable                                   bool
+	CanEnable, CanDisable, CanReconnect                     bool
 	ID                                                      int64
 	Name, Owner, State, LastSeen, Error, Mode, ContactError string
 	CanDelete                                               bool
@@ -93,6 +95,7 @@ func (a *App) machinePage(w http.ResponseWriter, r *http.Request) {
 		if record.DeletionPending {
 			view.State = "Удаляется"
 		}
+		view.CanReconnect = record.OwnerID == user.ID && !record.DeletionPending
 		view.Revision = record.Revision
 		view.ConnectionState = record.AccessState
 		view.ConnectionError = record.AccessError
@@ -226,7 +229,7 @@ func (a *App) deleteMachine(w http.ResponseWriter, r *http.Request) {
 	writeMachineJSON(w, status, result)
 }
 
-const machineTemplate = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Машины — Среда</title><style>body{font:17px system-ui;max-width:850px;margin:40px auto;padding:0 24px;color:#16352b}article{border:1px solid #ccd9cf;padding:20px;border-radius:12px;margin:16px 0}input,button{font:inherit;padding:12px}button{background:#235c43;color:white;border:0;border-radius:8px}</style><a href="/">Кабинет</a><h1>Машины</h1>{{range .Machines}}<article><h2>{{.Name}}</h2><p>Владелец: {{.Owner}}</p><p><a href="/machines/{{.ID}}/setup-prompt">Промпт для настройки</a></p><p>{{.State}}</p><p>Подключение: {{.ConnectionState}}</p>{{if .ConnectionError}}<p role="alert">{{.ConnectionError}}</p>{{end}}{{if .CanEnable}}<form method="post" action="/machines/{{.ID}}/enable"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}"><button>Включить подключение</button></form>{{end}}{{if .CanDisable}}<form method="post" action="/machines/{{.ID}}/disable"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}"><button>Отключить подключение</button></form>{{end}}<p>Последний контакт: {{.LastSeen}}</p>{{if .ContactError}}<p role="alert">{{.ContactError}}</p>{{end}}{{if eq .Mode "manual"}}<a href="/machines/{{.ID}}/wireguard">WireGuard</a>{{end}}{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}{{if .CanDelete}}<form method="post" action="/machines/{{.ID}}/delete"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Удалить машину</button></form>{{end}}</article>{{else}}<p>Добавьте свою машину, чтобы подключить агент.</p>{{end}}<h2>Добавить машину</h2><form method="post" action="/machines"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Название <input name="name" maxlength="100" required></label> <label>Подключение <select name="mode"><option value="agent">С агентом</option><option value="manual">Ручной WireGuard</option></select></label> <button>Получить код подключения</button></form><p>Поддерживается Debian 12/13 LXC с systemd и доступом к WireGuard. Код действует 15 минут и показывается один раз. Время контакта относится к управляющему соединению агента.</p></html>`
+const machineTemplate = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Машины — Среда</title><style>body{font:17px system-ui;max-width:850px;margin:40px auto;padding:0 24px;color:#16352b}article{border:1px solid #ccd9cf;padding:20px;border-radius:12px;margin:16px 0}input,button{font:inherit;padding:12px}button{background:#235c43;color:white;border:0;border-radius:8px}</style><a href="/">Кабинет</a><h1>Машины</h1>{{range .Machines}}<article><h2>{{.Name}}</h2><p>Владелец: {{.Owner}}</p><p><a href="/machines/{{.ID}}/setup-prompt">Промпт для настройки</a></p><p>{{.State}}</p><p>Подключение: {{.ConnectionState}}</p>{{if .ConnectionError}}<p role="alert">{{.ConnectionError}}</p>{{end}}{{if .CanReconnect}}<form method="post" action="/machines/{{.ID}}/reconnect"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}"><p>Переподключение отзовёт прежние ключи и код. Публикации и поддомены сохранятся.</p><button>Переподключить машину</button></form>{{end}}{{if .CanEnable}}<form method="post" action="/machines/{{.ID}}/enable"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}"><button>Включить подключение</button></form>{{end}}{{if .CanDisable}}<form method="post" action="/machines/{{.ID}}/disable"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}"><button>Отключить подключение</button></form>{{end}}<p>Последний контакт: {{.LastSeen}}</p>{{if .ContactError}}<p role="alert">{{.ContactError}}</p>{{end}}{{if eq .Mode "manual"}}<a href="/machines/{{.ID}}/wireguard">WireGuard</a>{{end}}{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}{{if .CanDelete}}<form method="post" action="/machines/{{.ID}}/delete"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Удалить машину</button></form>{{end}}</article>{{else}}<p>Добавьте свою машину, чтобы подключить агент.</p>{{end}}<h2>Добавить машину</h2><form method="post" action="/machines"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Название <input name="name" maxlength="100" required></label> <label>Подключение <select name="mode"><option value="agent">С агентом</option><option value="manual">Ручной WireGuard</option></select></label> <button>Получить код подключения</button></form><p>Поддерживается Debian 12/13 LXC с systemd и доступом к WireGuard. Код действует 15 минут и показывается один раз. Время контакта относится к управляющему соединению агента.</p></html>`
 
 func (a *App) enableMachine(w http.ResponseWriter, r *http.Request) {
 	a.changeMachineAccess(w, r, true)
@@ -245,7 +248,7 @@ func (a *App) changeMachineAccess(w http.ResponseWriter, r *http.Request, enable
 		http.Error(w, "Некорректная команда", 400)
 		return
 	}
-	if err := a.machines.ChangeAccess(r.Context(), machineActor(user), id, revision, enabled); err != nil {
+	if err := a.agentControl.ChangeAccess(r.Context(), machineActor(user), id, revision, enabled); err != nil {
 		a.machineError(w, err)
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sreda/internal/agentprotocol"
 	"time"
 )
 
@@ -47,7 +48,7 @@ func (s *sqliteStore) find(ctx context.Context, actor Actor, id int64) (Record, 
 func (s *sqliteStore) connection(ctx context.Context, id int64) (Connection, error) {
 	var c Connection
 	var last sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),COALESCE(proxy_token,''),enabled,last_seen,mode,(SELECT access_revision FROM users WHERE id=machines.owner_id) FROM machines WHERE id=?`, id).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled, &last, &c.Mode, &c.OwnerRevision)
+	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),COALESCE(proxy_token,''),enabled,last_seen,mode,access_revision,(SELECT access_revision FROM users WHERE id=machines.owner_id) FROM machines WHERE id=?`, id).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled, &last, &c.Mode, &c.Revision, &c.OwnerRevision)
 	if last.Valid {
 		c.LastSeen = time.Unix(last.Int64, 0)
 	}
@@ -55,20 +56,19 @@ func (s *sqliteStore) connection(ctx context.Context, id int64) (Connection, err
 }
 func (s *sqliteStore) agent(ctx context.Context, credential []byte) (Connection, error) {
 	var c Connection
-	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,public_key,tunnel_address,proxy_token,enabled,(SELECT access_revision FROM users WHERE id=machines.owner_id) FROM machines WHERE credential_hash=? AND enabled=1 AND mode='agent' AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0)`, credential).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled, &c.OwnerRevision)
+	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,public_key,tunnel_address,proxy_token,enabled,access_revision,(SELECT access_revision FROM users WHERE id=machines.owner_id) FROM machines WHERE credential_hash=? AND enabled=1 AND mode='agent' AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0)`, credential).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled, &c.Revision, &c.OwnerRevision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, failure(Unauthorized, "Подключение отключено или отозвано")
 	}
 	return c, err
 }
-func (s *sqliteStore) observe(ctx context.Context, id, now int64, ownerRevision int64) error {
-	expected := ownerRevision
-	result, err := s.db.ExecContext(ctx, `UPDATE machines SET last_seen=? WHERE id=? AND enabled=1 AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?)`, now, id, expected)
+func (s *sqliteStore) observe(ctx context.Context, identity agentprotocol.ConnectionIdentity, now int64) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE machines SET last_seen=? WHERE id=? AND enabled=1 AND access_revision=? AND mode='agent' AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?)`, now, identity.MachineID, identity.Revision, identity.OwnerRevision)
 	if err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
-	if err == nil && count != 1 {
+	n, err := result.RowsAffected()
+	if err == nil && n != 1 {
 		return failure(Unauthorized, "Подключение отключено или отозвано")
 	}
 	return err

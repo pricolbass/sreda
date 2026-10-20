@@ -50,7 +50,7 @@ func (a *App) protect(next http.Handler) http.Handler {
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		if r.Method != "GET" && r.Method != "HEAD" {
 			r.Body = http.MaxBytesReader(w, r.Body, 4096)
-			if r.URL.Path == "/api/agent/enroll" || r.URL.Path == "/api/agent/heartbeat" {
+			if r.URL.Path == "/api/agent/enroll" || r.URL.Path == "/api/agent/heartbeat" || r.URL.Path == "/api/agent/recover" {
 				next.ServeHTTP(w, r)
 				return
 			}
