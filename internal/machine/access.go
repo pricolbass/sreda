@@ -46,6 +46,7 @@ func (m *Manager) changeConnection(ctx context.Context, id int64, enabled, requi
 		_ = m.cleanupConnectionOperation(cleanupCtx, op)
 		return failure(Unavailable, "Изменение подключения не подтверждено; доступ остаётся выключенным")
 	}
+	m.contacts.Delete(id)
 	return nil
 }
 func (m *Manager) cleanupConnectionOperation(ctx context.Context, op connectionOperation) error {

@@ -31,6 +31,9 @@ func (k *memoryKernel) Run(_ context.Context, command string, args []string, inp
 			if k.key == "" {
 				return "", nil
 			}
+			if args[2] == "latest-handshakes" {
+				return k.key + "\t0\n", nil
+			}
 			return k.key + "\t" + k.address + "\n", nil
 		}
 		if args[4] == "remove" {
@@ -137,5 +140,22 @@ func TestConnectionAddressIsIndependentOfMonotonicMachineID(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != 204 {
 		t.Fatalf("available address rejected for later machine id: %d", w.Code)
+	}
+}
+
+func TestHandshakeObservationRequiresAppliedPeerAndVerifiedKernelSignal(t *testing.T) {
+	k := &memoryKernel{route: `[{"dst":"10.203.0.2","dev":"wg-sreda"}]`}
+	h, err := tunnel.NewHelper(tunnel.HelperConfig{Interface: "wg-sreda", WG: "/usr/bin/wg", NFT: "/usr/sbin/nft"}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := changePeer(t, h, "observe"); got != 503 {
+		t.Fatalf("unconfigured observation: %d", got)
+	}
+	if got := changePeer(t, h, "apply"); got != 204 {
+		t.Fatalf("apply: %d", got)
+	}
+	if got := changePeer(t, h, "observe"); got != 200 {
+		t.Fatalf("configured observation: %d", got)
 	}
 }

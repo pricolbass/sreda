@@ -34,6 +34,10 @@ func (c *Controller) Enroll(ctx context.Context, input machine.EnrollInput) (age
 	if err != nil {
 		return agentprotocol.Control{}, err
 	}
+	if conn.Mode == machine.ManualMode {
+		details, _ := c.machines.GatewayDetails()
+		return agentprotocol.Control{MachineID: conn.ID, Address: conn.Address, Tunnel: details}, nil
+	}
 	return c.configuration(ctx, conn)
 }
 func (c *Controller) Heartbeat(ctx context.Context, credential string, input Heartbeat) (agentprotocol.Control, error) {

@@ -15,7 +15,7 @@ type enrollmentIntent struct {
 
 // reserveEnrollment commits the binding before any network side effect. The
 // write transaction allocates across both active and unfinished enrollments.
-func (s *sqliteStore) reserveEnrollment(ctx context.Context, input EnrollInput, proxy, owner string, now, leaseUntil int64, pool []string) (enrollmentIntent, error) {
+func (s *sqliteStore) reserveEnrollment(ctx context.Context, input EnrollInput, proxy func(Mode) string, owner string, now, leaseUntil int64, pool []string) (enrollmentIntent, error) {
 	var intent enrollmentIntent
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -23,7 +23,7 @@ func (s *sqliteStore) reserveEnrollment(ctx context.Context, input EnrollInput, 
 	}
 	defer tx.Rollback()
 	var expiry int64
-	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,code_expires_at FROM machines WHERE code_hash=? AND credential_hash IS NULL`, hash(input.Code)).Scan(&intent.connection.ID, &intent.connection.OwnerID, &expiry)
+	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,code_expires_at,mode FROM machines WHERE code_hash=? AND credential_hash IS NULL`, hash(input.Code)).Scan(&intent.connection.ID, &intent.connection.OwnerID, &expiry, &intent.connection.Mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return intent, failure(Unauthorized, "Код недействителен или уже использован")
 	}
@@ -92,7 +92,7 @@ func (s *sqliteStore) reserveEnrollment(ctx context.Context, input EnrollInput, 
 	intent.codeHash = hash(input.Code)
 	intent.credentialHash = hash(input.Credential)
 	intent.connection.PublicKey = input.PublicKey
-	intent.connection.ProxyToken = proxy
+	intent.connection.ProxyToken = proxy(intent.connection.Mode)
 	intent.phase = "applying"
 	intent.owner = owner
 	_, err = tx.ExecContext(ctx, `INSERT INTO machine_enrollments(machine_id,code_hash,credential_hash,public_key,tunnel_address,proxy_token,phase,lease_owner,lease_until) VALUES(?,?,?,?,?,?,'applying',?,?)`, intent.connection.ID, intent.codeHash, intent.credentialHash, intent.connection.PublicKey, intent.connection.Address, intent.connection.ProxyToken, owner, leaseUntil)

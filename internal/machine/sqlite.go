@@ -12,15 +12,8 @@ type sqliteStore struct{ db *sql.DB }
 
 // New composes the local SQLite adapter. Schema installation belongs to application startup.
 func New(db *sql.DB) *Manager { return &Manager{store: &sqliteStore{db: db}} }
-func (s *sqliteStore) create(ctx context.Context, ownerID int64, name string, code []byte, expiry, created int64) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `INSERT INTO machines(id,owner_id,name,code_hash,code_expires_at,created_at) VALUES((SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM machines UNION ALL SELECT id FROM machine_tombstones)),?,?,?,?,?)`, ownerID, name, code, expiry, created)
-	if err != nil {
-		return 0, err
-	}
-	return result.LastInsertId()
-}
 func (s *sqliteStore) list(ctx context.Context, actor Actor) ([]Record, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.owner_id,m.name,u.login,m.enabled,m.last_seen,EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id),COALESCE((SELECT error FROM machine_deletions d WHERE d.machine_id=m.id),'') FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.owner_id=? OR ? ORDER BY m.id`, actor.ID, actor.Admin)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.owner_id,m.name,u.login,m.enabled,m.last_seen,m.mode,EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id),COALESCE((SELECT error FROM machine_deletions d WHERE d.machine_id=m.id),'') FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.owner_id=? OR ? ORDER BY m.id`, actor.ID, actor.Admin)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +22,7 @@ func (s *sqliteStore) list(ctx context.Context, actor Actor) ([]Record, error) {
 	for rows.Next() {
 		var r Record
 		var last sql.NullInt64
-		if err = rows.Scan(&r.ID, &r.OwnerID, &r.Name, &r.Owner, &r.Enabled, &last, &r.DeletionPending, &r.DeleteError); err != nil {
+		if err = rows.Scan(&r.ID, &r.OwnerID, &r.Name, &r.Owner, &r.Enabled, &last, &r.Mode, &r.DeletionPending, &r.DeleteError); err != nil {
 			return nil, err
 		}
 		if last.Valid {
@@ -50,7 +43,7 @@ func (s *sqliteStore) find(ctx context.Context, actor Actor, id int64) (Record, 
 func (s *sqliteStore) connection(ctx context.Context, id int64) (Connection, error) {
 	var c Connection
 	var last sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),COALESCE(proxy_token,''),enabled,last_seen FROM machines WHERE id=?`, id).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled, &last)
+	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),COALESCE(proxy_token,''),enabled,last_seen,mode FROM machines WHERE id=?`, id).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled, &last, &c.Mode)
 	if last.Valid {
 		c.LastSeen = time.Unix(last.Int64, 0)
 	}
@@ -58,7 +51,7 @@ func (s *sqliteStore) connection(ctx context.Context, id int64) (Connection, err
 }
 func (s *sqliteStore) agent(ctx context.Context, credential []byte) (Connection, error) {
 	var c Connection
-	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,public_key,tunnel_address,proxy_token,enabled FROM machines WHERE credential_hash=? AND enabled=1`, credential).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled)
+	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,public_key,tunnel_address,proxy_token,enabled FROM machines WHERE credential_hash=? AND enabled=1 AND mode='agent'`, credential).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, failure(Unauthorized, "Подключение отключено или отозвано")
 	}
@@ -69,7 +62,7 @@ func (s *sqliteStore) observe(ctx context.Context, id, now int64) error {
 	return err
 }
 func (s *sqliteStore) setEnabled(ctx context.Context, id int64, enabled bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET enabled=? WHERE id=?`, enabled, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET enabled=?,last_seen=NULL WHERE id=?`, enabled, id)
 	return err
 }
 func (s *sqliteStore) enabledPeers(ctx context.Context) ([]tunnel.Peer, error) {

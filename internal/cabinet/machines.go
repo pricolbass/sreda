@@ -25,6 +25,9 @@ func installMachineSchema(tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
+	if err := machine.InstallManualSchema(tx); err != nil {
+		return err
+	}
 	return machine.InstallDeletionSchema(tx)
 }
 

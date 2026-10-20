@@ -79,7 +79,7 @@ func (s *sqliteStore) recordDeletionClosure(ctx context.Context, id string, clos
 	return count == 1, tx.Commit()
 }
 func finalizeDeletions(ctx context.Context, tx *sql.Tx, machineID int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT p.id,m.owner_id,p.subdomain FROM publication_deletions d JOIN publications p ON p.id=d.publication_id JOIN machines m ON m.id=p.machine_id JOIN machine_control c ON c.machine_id=m.id WHERE d.gateway_closed=1 AND c.applied_generation>=d.removal_generation AND (?=0 OR m.id=?)`, machineID, machineID)
+	rows, err := tx.QueryContext(ctx, `SELECT p.id,m.owner_id,p.subdomain FROM publication_deletions d JOIN publications p ON p.id=d.publication_id JOIN machines m ON m.id=p.machine_id JOIN machine_control c ON c.machine_id=m.id WHERE d.gateway_closed=1 AND (m.mode='manual' OR c.applied_generation>=d.removal_generation) AND (?=0 OR m.id=?)`, machineID, machineID)
 	if err != nil {
 		return err
 	}

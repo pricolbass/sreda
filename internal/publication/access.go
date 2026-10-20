@@ -38,6 +38,13 @@ func (m *Module) SetEnabled(ctx context.Context, actor Actor, change AccessChang
 		state := "Отключается"
 		if change.Enabled {
 			state = "Настраивается"
+			endpoint, err := m.transport.Endpoint(candidate.Delivery)
+			if err != nil {
+				return accessDecision{}, fail(Unavailable, "Настройки доставки публикации не подтверждены")
+			}
+			if !endpoint.AgentControlled {
+				state = "Настроена"
+			}
 		}
 		return accessDecision{Change: true, Enabled: change.Enabled, State: state}, nil
 	})

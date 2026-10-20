@@ -448,3 +448,46 @@ func TestFreedNameReachesNewOwnerAndOldAgentRejectsDeletedID(t *testing.T) {
 		t.Fatalf("foreign machine deletion: %d", w.Code)
 	}
 }
+
+func TestManualPublicationDeletionReleasesNameAfterGatewayClosureWithoutAgentAcknowledgment(t *testing.T) {
+	app, b, _ := setup(t)
+	app.SetGateway(testGateway{})
+	app.ConfigurePublicationZone("example.test")
+	b.login()
+	b.request("GET", "/machines", nil)
+	created := b.request("POST", "/machines", url.Values{"name": {"Manual Debian"}, "mode": {"manual"}})
+	var pending struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("POST", origin+"/api/agent/enroll", strings.NewReader(`{"code":"`+pending.Code+`","public_key":"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","credential":"`+strings.Repeat("m", 43)+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	enrolled := httptest.NewRecorder()
+	b.handler.ServeHTTP(enrolled, request)
+	if enrolled.Code != 201 {
+		t.Fatalf("enroll: %d %s", enrolled.Code, enrolled.Body.String())
+	}
+	p := lifecyclePublication(t, b, "manual-delete", "10.203.0.2:8080")
+	if w := b.request("POST", "/publications/"+p.ID+"/delete", url.Values{"revision": {"1"}, "confirm_name": {"manual-delete"}}); w.Code != 200 {
+		t.Fatalf("manual delete waits for absent agent: %d %s", w.Code, w.Body.String())
+	}
+	if w := b.request("GET", "/publications/"+p.ID, nil); w.Code != 404 {
+		t.Fatalf("deleted manual publication remains: %d", w.Code)
+	}
+	replacement := lifecyclePublication(t, b, "manual-delete", "10.203.0.2:9090")
+	if replacement.ID == p.ID {
+		t.Fatal("publication ID reused")
+	}
+	if w := b.request("POST", "/publications/"+replacement.ID+"/delete", url.Values{"revision": {"1"}, "confirm_name": {"manual-delete"}}); w.Code != 200 {
+		t.Fatalf("delete replacement: %d %s", w.Code, w.Body.String())
+	}
+	if w := b.request("POST", "/machines/1/delete", nil); w.Code != 200 {
+		t.Fatalf("manual machine cleanup: %d %s", w.Code, w.Body.String())
+	}
+	created = b.request("POST", "/machines", url.Values{"name": {"Replacement manual"}, "mode": {"manual"}})
+	if created.Code != 201 || !strings.Contains(created.Body.String(), `"id":2`) {
+		t.Fatalf("manual machine ID reused: %d %s", created.Code, created.Body.String())
+	}
+}

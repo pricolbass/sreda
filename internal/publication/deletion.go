@@ -15,7 +15,7 @@ type DeletionResult struct {
 }
 
 // Delete commits irrevocable deletion intent before draining. The name remains
-// reserved until both the gateway and the registered agent confirm removal.
+// reserved until the gateway closes and, for agent mode, the agent confirms removal.
 func (m *Module) Delete(ctx context.Context, actor Actor, request Deletion) (DeletionResult, error) {
 	if request.Revision < 1 {
 		return DeletionResult{}, fail(Invalid, "Обновите страницу: отсутствует версия публикации")

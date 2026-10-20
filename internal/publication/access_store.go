@@ -9,6 +9,7 @@ import (
 type accessCandidate struct {
 	Publication
 	MachineEnabled bool
+	Delivery       Connection
 }
 type accessDecision struct {
 	Change, Enabled bool
@@ -27,7 +28,8 @@ func (s *sqliteStore) changeAccess(ctx context.Context, id string, decide func(a
 	}
 	candidate := accessCandidate{Publication: p}
 	if p.ID != "" {
-		if err = tx.QueryRowContext(ctx, `SELECT enabled FROM machines WHERE id=?`, p.MachineID).Scan(&candidate.MachineEnabled); err != nil {
+		candidate.Delivery = Connection{ID: p.ID, MachineID: p.MachineID, Target: p.Target}
+		if err = tx.QueryRowContext(ctx, `SELECT enabled,mode,COALESCE(tunnel_address,''),COALESCE(proxy_token,'') FROM machines WHERE id=?`, p.MachineID).Scan(&candidate.MachineEnabled, &candidate.Delivery.Mode, &candidate.Delivery.Address, &candidate.Delivery.ProxyToken); err != nil {
 			return p, err
 		}
 	}
