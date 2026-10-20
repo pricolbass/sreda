@@ -43,7 +43,7 @@ func (s *sqliteStore) find(ctx context.Context, actor Actor, id int64) (Record, 
 func (s *sqliteStore) connection(ctx context.Context, id int64) (Connection, error) {
 	var c Connection
 	var last sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),COALESCE(proxy_token,''),enabled,last_seen,mode FROM machines WHERE id=?`, id).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled, &last, &c.Mode)
+	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),COALESCE(proxy_token,''),enabled,last_seen,mode,(SELECT access_revision FROM users WHERE id=machines.owner_id) FROM machines WHERE id=?`, id).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled, &last, &c.Mode, &c.OwnerRevision)
 	if last.Valid {
 		c.LastSeen = time.Unix(last.Int64, 0)
 	}
@@ -51,14 +51,21 @@ func (s *sqliteStore) connection(ctx context.Context, id int64) (Connection, err
 }
 func (s *sqliteStore) agent(ctx context.Context, credential []byte) (Connection, error) {
 	var c Connection
-	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,public_key,tunnel_address,proxy_token,enabled FROM machines WHERE credential_hash=? AND enabled=1 AND mode='agent'`, credential).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled)
+	err := s.db.QueryRowContext(ctx, `SELECT id,owner_id,public_key,tunnel_address,proxy_token,enabled FROM machines WHERE credential_hash=? AND enabled=1 AND mode='agent' AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0)`, credential).Scan(&c.ID, &c.OwnerID, &c.PublicKey, &c.Address, &c.ProxyToken, &c.Enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, failure(Unauthorized, "Подключение отключено или отозвано")
 	}
 	return c, err
 }
 func (s *sqliteStore) observe(ctx context.Context, id, now int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET last_seen=? WHERE id=? AND enabled=1`, now, id)
+	result, err := s.db.ExecContext(ctx, `UPDATE machines SET last_seen=? WHERE id=? AND enabled=1 AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0)`, now, id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err == nil && count != 1 {
+		return failure(Unauthorized, "Подключение отключено или отозвано")
+	}
 	return err
 }
 func (s *sqliteStore) setEnabled(ctx context.Context, id int64, enabled bool) error {
@@ -66,7 +73,7 @@ func (s *sqliteStore) setEnabled(ctx context.Context, id int64, enabled bool) er
 	return err
 }
 func (s *sqliteStore) enabledPeers(ctx context.Context) ([]tunnel.Peer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,public_key,tunnel_address FROM machines WHERE enabled=1 AND public_key IS NOT NULL`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,public_key,tunnel_address FROM machines WHERE enabled=1 AND public_key IS NOT NULL AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0)`)
 	if err != nil {
 		return nil, err
 	}

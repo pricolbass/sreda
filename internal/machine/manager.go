@@ -51,7 +51,7 @@ type Record struct {
 
 // Connection includes credentials for trusted application modules. Never render it.
 type Connection struct {
-	ID, OwnerID                    int64
+	ID, OwnerID, OwnerRevision     int64
 	Mode                           Mode
 	PublicKey, Address, ProxyToken string
 	Enabled                        bool
