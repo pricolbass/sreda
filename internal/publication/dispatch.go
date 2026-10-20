@@ -13,12 +13,19 @@ import (
 func (m *Module) Wrap(cabinet http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := strings.ToLower(r.Host)
+		if host == strings.ToLower(m.cabinetHost) {
+			cabinet.ServeHTTP(w, r)
+			return
+		}
 		if h, port, err := net.SplitHostPort(host); err == nil {
-			if port != "443" {
+			if port != m.httpsPort() {
 				cabinet.ServeHTTP(w, r)
 				return
 			}
 			host = h
+		} else if m.httpsPort() != "443" {
+			cabinet.ServeHTTP(w, r)
+			return
 		}
 		if host == strings.ToLower(m.cabinetHost) || m.zone == "" || !strings.HasSuffix(host, "."+m.zone) {
 			cabinet.ServeHTTP(w, r)
