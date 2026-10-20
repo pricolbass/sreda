@@ -21,20 +21,22 @@ type Actor struct {
 	Admin bool
 }
 type Publication struct {
-	ID             string `json:"id"`
-	MachineID      int64  `json:"machine_id"`
-	Subdomain      string `json:"subdomain"`
-	Target         string `json:"target"`
-	URL            string `json:"url"`
-	State          string `json:"state"`
-	Error          string `json:"error"`
-	Revision       int64  `json:"revision"`
-	Owner          string `json:"owner"`
-	OwnerID        int64  `json:"-"`
-	DesiredEnabled bool   `json:"enabled"`
-	CanEnable      bool   `json:"can_enable"`
-	CanDisable     bool   `json:"can_disable"`
-	CanRetry       bool   `json:"can_retry"`
+	ID              string `json:"id"`
+	MachineID       int64  `json:"machine_id"`
+	Subdomain       string `json:"subdomain"`
+	Target          string `json:"target"`
+	URL             string `json:"url"`
+	State           string `json:"state"`
+	Error           string `json:"error"`
+	Revision        int64  `json:"revision"`
+	Owner           string `json:"owner"`
+	OwnerID         int64  `json:"-"`
+	DesiredEnabled  bool   `json:"enabled"`
+	CanEnable       bool   `json:"can_enable"`
+	CanDisable      bool   `json:"can_disable"`
+	CanRetry        bool   `json:"can_retry"`
+	DeletionPending bool   `json:"deleting"`
+	CanDelete       bool   `json:"can_delete"`
 }
 type Machine struct {
 	ID   int64
@@ -245,6 +247,13 @@ func newPublicationID() string {
 
 func (m *Module) decorate(p *Publication, actor Actor) {
 	p.URL = m.url(p.Subdomain)
+	p.CanDelete = p.OwnerID == actor.ID
+	if p.DeletionPending {
+		p.CanDisable = false
+		p.CanEnable = false
+		p.CanRetry = false
+		return
+	}
 	p.CanDisable = (p.OwnerID == actor.ID || actor.Admin) && p.State != "Отключена"
 	p.CanEnable = p.OwnerID == actor.ID && p.State == "Отключена"
 	p.CanRetry = p.OwnerID == actor.ID && p.DesiredEnabled && p.State == "Ошибка"
