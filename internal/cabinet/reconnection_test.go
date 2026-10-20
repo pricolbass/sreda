@@ -2,6 +2,7 @@ package cabinet_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"sreda/internal/agent"
 	"sreda/internal/agentprotocol"
 	"sreda/internal/cabinet"
@@ -89,7 +91,7 @@ func TestReconnectReplacesCredentialsAndRetainsExistingPublications(t *testing.T
 }
 
 func TestReconnectDoesNotEnableDisabledConnectionOrPublication(t *testing.T) {
-	app, b, _ := setup(t)
+	app, b, dir := setup(t)
 	app.SetGateway(testGateway{})
 	if err := app.ConfigurePublicationZone("example.test"); err != nil {
 		t.Fatal(err)
@@ -109,6 +111,16 @@ func TestReconnectDoesNotEnableDisabledConnectionOrPublication(t *testing.T) {
 	if response.Code != 201 {
 		t.Fatal(response.Code, response.Body.String())
 	}
+	if err := app.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := cabinet.Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reopened.SetGateway(testGateway{})
+	b.handler = reopened.Handler()
 	var next struct{ Code string }
 	json.Unmarshal(response.Body.Bytes(), &next)
 	credential := strings.Repeat("n", 43)
@@ -655,5 +667,40 @@ func TestReconnectCodeCannotBeClaimedByConcurrentSecondAgent(t *testing.T) {
 	close(g.release)
 	if response := <-done; response.Code != 201 {
 		t.Fatal(response.Code, response.Body.String())
+	}
+}
+
+func TestReconnectMigrationKeepsPreviouslyIssuedInitialCodeUsable(t *testing.T) {
+	app, b, dir := setup(t)
+	app.SetGateway(testGateway{})
+	b.login()
+	code := createEnrollmentCode(t, b, "Older cabinet unused code")
+	if err := app.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Persist a version04 fixture made before new machine creation recorded the
+	// initial desired-on intent. No explicit disable was possible before enrollment.
+	legacy, err := sql.Open("sqlite", filepath.Join(dir, "sreda.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`UPDATE machines SET desired_enabled=0,access_state='Отключено' WHERE id=1`)
+	legacy.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := cabinet.Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reopened.SetGateway(testGateway{})
+	b.handler = reopened.Handler()
+	credential := strings.Repeat("n", 43)
+	if w := reconnectEnroll(t, b, code, "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", credential); w.Code != 201 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := agentContact(t, b, credential, `{"ready":false}`); w.Code != 200 {
+		t.Fatalf("upgrade silently disabled never-enrolled machine %d %s", w.Code, w.Body.String())
 	}
 }

@@ -159,6 +159,7 @@ func (s *sqliteStore) claimReconnectPending(ctx context.Context, r Reconnection,
 }
 
 func InstallReconnectionSchema(tx *sql.Tx) error {
-	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS machine_reconnections(machine_id INTEGER PRIMARY KEY REFERENCES machines(id) ON DELETE CASCADE,source_revision INTEGER NOT NULL,owner_revision INTEGER NOT NULL,lease_owner TEXT NOT NULL,lease_until INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '');`)
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS machine_reconnections(machine_id INTEGER PRIMARY KEY REFERENCES machines(id) ON DELETE CASCADE,source_revision INTEGER NOT NULL,owner_revision INTEGER NOT NULL,lease_owner TEXT NOT NULL,lease_until INTEGER NOT NULL,error TEXT NOT NULL DEFAULT '');
+UPDATE machines SET desired_enabled=1,access_state='Ожидает подключения' WHERE code_hash IS NOT NULL AND credential_hash IS NULL AND public_key IS NULL AND desired_enabled=0 AND access_state='Отключено' AND NOT EXISTS(SELECT 1 FROM machine_reconnections x WHERE x.machine_id=machines.id);`)
 	return err
 }
