@@ -274,7 +274,7 @@ func (s *sqliteStore) connection(ctx context.Context, label string) (Connection,
 func activeMachine(ctx context.Context, tx *sql.Tx, machineID int64, ownerRevision int64) error {
 	expected := ownerRevision
 	var id int64
-	err := tx.QueryRowContext(ctx, `SELECT m.id FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=? AND m.enabled=1 AND u.blocked=0 AND (?=0 OR u.access_revision=?)`, machineID, expected, expected).Scan(&id)
+	err := tx.QueryRowContext(ctx, `SELECT m.id FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=? AND m.enabled=1 AND u.blocked=0 AND u.access_revision=?`, machineID, expected).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fail(Unavailable, "Подключение отключено или отозвано")
 	}

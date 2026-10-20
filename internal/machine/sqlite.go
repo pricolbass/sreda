@@ -59,7 +59,7 @@ func (s *sqliteStore) agent(ctx context.Context, credential []byte) (Connection,
 }
 func (s *sqliteStore) observe(ctx context.Context, id, now int64, ownerRevision int64) error {
 	expected := ownerRevision
-	result, err := s.db.ExecContext(ctx, `UPDATE machines SET last_seen=? WHERE id=? AND enabled=1 AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND (?=0 OR u.access_revision=?))`, now, id, expected, expected)
+	result, err := s.db.ExecContext(ctx, `UPDATE machines SET last_seen=? WHERE id=? AND enabled=1 AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?)`, now, id, expected)
 	if err != nil {
 		return err
 	}
@@ -67,10 +67,6 @@ func (s *sqliteStore) observe(ctx context.Context, id, now int64, ownerRevision 
 	if err == nil && count != 1 {
 		return failure(Unauthorized, "Подключение отключено или отозвано")
 	}
-	return err
-}
-func (s *sqliteStore) setEnabled(ctx context.Context, id int64, enabled bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET enabled=?,last_seen=NULL WHERE id=?`, enabled, id)
 	return err
 }
 func (s *sqliteStore) enabledPeers(ctx context.Context) ([]tunnel.Peer, error) {

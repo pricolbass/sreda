@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"sreda/internal/agent"
 	"sreda/internal/agentprotocol"
+	"sreda/internal/tunnel"
 	"strconv"
 	"strings"
 	"testing"
@@ -162,5 +163,97 @@ func TestBlockClosesManualHTTPAndAgentWebSocketAndPreservesOtherOwner(t *testing
 		if r.StatusCode != want {
 			t.Fatalf("%s: %d %s", host, r.StatusCode, body)
 		}
+	}
+}
+
+func TestBlockUnconfirmedRouteStillRemovesPeerAndCanRetry(t *testing.T) {
+	app, admin, _ := setup(t)
+	gatewayAdapter := &interruptedEnrollmentGateway{peers: map[int64]tunnel.Peer{}}
+	app.SetGateway(gatewayAdapter)
+	app.ConfigurePublicationZone("example.test")
+	admin.login()
+	alice := createOrdinary(t, admin, "alice")
+	signIn(alice, "alice", password)
+	credential := enrolledMachine(t, alice)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "start\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	proxy := agent.NewProxy("127.0.0.1")
+	defer proxy.Close()
+	agentServer := httptest.NewServer(proxy)
+	defer agentServer.Close()
+	app.SetPublicationDialer(func(ctx context.Context, network, address string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, agentServer.Listener.Addr().String())
+	})
+	p := lifecyclePublication(t, alice, "blocked-writer", strings.TrimPrefix(upstream.URL, "http://"))
+	var control agentprotocol.Control
+	json.Unmarshal(agentContact(t, alice, credential, `{"ready":true}`).Body.Bytes(), &control)
+	if err := proxy.ApplyControl(control); err != nil {
+		t.Fatal(err)
+	}
+	agentContact(t, alice, credential, `{"ready":true,"applied_generation":1}`)
+	writer := &blockedHTTPWriter{header: make(http.Header), entered: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if recovered := recover(); recovered != nil && recovered != http.ErrAbortHandler {
+				t.Errorf("forwarding panic: %v", recovered)
+			}
+		}()
+		app.Handler().ServeHTTP(writer, httptest.NewRequest("GET", "https://blocked-writer.example.test/stream", nil))
+	}()
+	released := false
+	defer func() {
+		if !released {
+			close(writer.release)
+		}
+		<-done
+	}()
+	select {
+	case <-writer.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not reach downstream")
+	}
+	admin.request("GET", "/admin/users", nil)
+	values := url.Values{"revision": {"1"}, "csrf": {admin.csrf}}
+	request := httptest.NewRequest("POST", origin+"/admin/users/2/block", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Origin", origin)
+	for _, cookie := range admin.cookies {
+		request.AddCookie(cookie)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	response := httptest.NewRecorder()
+	admin.handler.ServeHTTP(response, request.WithContext(ctx))
+	if response.Code != 503 {
+		t.Fatalf("unconfirmed route %d %s", response.Code, response.Body.String())
+	}
+	if len(gatewayAdapter.peers) != 0 || gatewayAdapter.removeCount[1] == 0 {
+		t.Fatal("route timeout prevented peer removal")
+	}
+	if gatewayAdapter.cleanupCanceled {
+		t.Fatal("peer cleanup inherited canceled request")
+	}
+	if w := admin.request("GET", "/admin/users", nil); strings.Contains(w.Body.String(), "<p>Доступ закрыт</p>") {
+		t.Fatal("unconfirmed route reported closed")
+	}
+	close(writer.release)
+	released = true
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("downstream did not finish")
+	}
+	if w := admin.request("POST", "/admin/users/2/block", url.Values{"revision": {"2"}}); w.Code != 303 {
+		t.Fatalf("closure retry %d %s", w.Code, w.Body.String())
+	}
+	if got := publicationDetail(t, admin, p.ID); got.State != "Отключена" {
+		t.Fatal(got.State)
 	}
 }
