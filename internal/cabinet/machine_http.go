@@ -19,6 +19,8 @@ func (a *App) registerMachineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /machines", a.machinePage)
 	mux.HandleFunc("POST /machines", a.createMachine)
 	mux.HandleFunc("GET /machines/{id}", a.machineDetail)
+	mux.HandleFunc("POST /machines/{id}/enable", a.enableMachine)
+	mux.HandleFunc("POST /machines/{id}/disable", a.disableMachine)
 	mux.HandleFunc("POST /machines/{id}/delete", a.deleteMachine)
 	mux.HandleFunc("GET /machines/{id}/wireguard", a.manualParameters)
 	mux.HandleFunc("GET /machines/{id}/wireguard/template", a.manualTemplateDownload)
@@ -28,6 +30,9 @@ func (a *App) registerMachineRoutes(mux *http.ServeMux) {
 }
 
 type machineView struct {
+	Revision                                                int64
+	ConnectionState, ConnectionError                        string
+	CanEnable, CanDisable                                   bool
 	ID                                                      int64
 	Name, Owner, State, LastSeen, Error, Mode, ContactError string
 	CanDelete                                               bool
@@ -58,6 +63,8 @@ func (a *App) machineError(w http.ResponseWriter, err error) {
 		status = 404
 	case machine.Unauthorized:
 		status = 401
+	case machine.Conflict:
+		status = 409
 	case machine.Unavailable:
 		status = 503
 	}
@@ -85,6 +92,11 @@ func (a *App) machinePage(w http.ResponseWriter, r *http.Request) {
 		if record.DeletionPending {
 			view.State = "Удаляется"
 		}
+		view.Revision = record.Revision
+		view.ConnectionState = record.AccessState
+		view.ConnectionError = record.AccessError
+		view.CanEnable = record.OwnerID == user.ID && !record.DesiredEnabled
+		view.CanDisable = (record.OwnerID == user.ID || user.Role == "admin") && record.DesiredEnabled
 		views = append(views, view)
 	}
 	csrf := randomToken()
@@ -213,4 +225,28 @@ func (a *App) deleteMachine(w http.ResponseWriter, r *http.Request) {
 	writeMachineJSON(w, status, result)
 }
 
-const machineTemplate = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Машины — Среда</title><style>body{font:17px system-ui;max-width:850px;margin:40px auto;padding:0 24px;color:#16352b}article{border:1px solid #ccd9cf;padding:20px;border-radius:12px;margin:16px 0}input,button{font:inherit;padding:12px}button{background:#235c43;color:white;border:0;border-radius:8px}</style><a href="/">Кабинет</a><h1>Машины</h1>{{range .Machines}}<article><h2>{{.Name}}</h2><p>Владелец: {{.Owner}}</p><p>{{.State}}</p><p>Последний контакт: {{.LastSeen}}</p>{{if .ContactError}}<p role="alert">{{.ContactError}}</p>{{end}}{{if eq .Mode "manual"}}<a href="/machines/{{.ID}}/wireguard">WireGuard</a>{{end}}{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}{{if .CanDelete}}<form method="post" action="/machines/{{.ID}}/delete"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Удалить машину</button></form>{{end}}</article>{{else}}<p>Добавьте свою машину, чтобы подключить агент.</p>{{end}}<h2>Добавить машину</h2><form method="post" action="/machines"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Название <input name="name" maxlength="100" required></label> <label>Подключение <select name="mode"><option value="agent">С агентом</option><option value="manual">Ручной WireGuard</option></select></label> <button>Получить код подключения</button></form><p>Поддерживается Debian 12/13 LXC с systemd и доступом к WireGuard. Код действует 15 минут и показывается один раз. Время контакта относится к управляющему соединению агента.</p></html>`
+const machineTemplate = `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Машины — Среда</title><style>body{font:17px system-ui;max-width:850px;margin:40px auto;padding:0 24px;color:#16352b}article{border:1px solid #ccd9cf;padding:20px;border-radius:12px;margin:16px 0}input,button{font:inherit;padding:12px}button{background:#235c43;color:white;border:0;border-radius:8px}</style><a href="/">Кабинет</a><h1>Машины</h1>{{range .Machines}}<article><h2>{{.Name}}</h2><p>Владелец: {{.Owner}}</p><p>{{.State}}</p><p>Подключение: {{.ConnectionState}}</p>{{if .ConnectionError}}<p role="alert">{{.ConnectionError}}</p>{{end}}{{if .CanEnable}}<form method="post" action="/machines/{{.ID}}/enable"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}"><button>Включить подключение</button></form>{{end}}{{if .CanDisable}}<form method="post" action="/machines/{{.ID}}/disable"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="revision" value="{{.Revision}}"><button>Отключить подключение</button></form>{{end}}<p>Последний контакт: {{.LastSeen}}</p>{{if .ContactError}}<p role="alert">{{.ContactError}}</p>{{end}}{{if eq .Mode "manual"}}<a href="/machines/{{.ID}}/wireguard">WireGuard</a>{{end}}{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}{{if .CanDelete}}<form method="post" action="/machines/{{.ID}}/delete"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button>Удалить машину</button></form>{{end}}</article>{{else}}<p>Добавьте свою машину, чтобы подключить агент.</p>{{end}}<h2>Добавить машину</h2><form method="post" action="/machines"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Название <input name="name" maxlength="100" required></label> <label>Подключение <select name="mode"><option value="agent">С агентом</option><option value="manual">Ручной WireGuard</option></select></label> <button>Получить код подключения</button></form><p>Поддерживается Debian 12/13 LXC с systemd и доступом к WireGuard. Код действует 15 минут и показывается один раз. Время контакта относится к управляющему соединению агента.</p></html>`
+
+func (a *App) enableMachine(w http.ResponseWriter, r *http.Request) {
+	a.changeMachineAccess(w, r, true)
+}
+func (a *App) disableMachine(w http.ResponseWriter, r *http.Request) {
+	a.changeMachineAccess(w, r, false)
+}
+func (a *App) changeMachineAccess(w http.ResponseWriter, r *http.Request, enabled bool) {
+	user, ok := a.currentUser(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	revision, revErr := strconv.ParseInt(r.PostForm.Get("revision"), 10, 64)
+	if err != nil || revErr != nil {
+		http.Error(w, "Некорректная команда", 400)
+		return
+	}
+	if err := a.machines.ChangeAccess(r.Context(), machineActor(user), id, revision, enabled); err != nil {
+		a.machineError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/machines", 303)
+}

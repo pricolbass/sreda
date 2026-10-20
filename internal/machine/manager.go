@@ -25,6 +25,7 @@ const (
 	NotFound
 	Unauthorized
 	Unavailable
+	Conflict
 )
 
 type Failure struct {
@@ -40,6 +41,9 @@ type Actor struct {
 	Admin bool
 }
 type Record struct {
+	Revision                         int64
+	DesiredEnabled                   bool
+	AccessState, AccessError         string
 	ID, OwnerID                      int64
 	Name, Owner                      string
 	Mode                             Mode
@@ -51,6 +55,7 @@ type Record struct {
 
 // Connection includes credentials for trusted application modules. Never render it.
 type Connection struct {
+	Revision                       int64
 	ID, OwnerID, OwnerRevision     int64
 	Mode                           Mode
 	PublicKey, Address, ProxyToken string
@@ -174,8 +179,8 @@ func (m *Manager) AuthenticateAgent(ctx context.Context, credential string) (Con
 	}
 	return m.store.agent(ctx, hash(credential))
 }
-func (m *Manager) ObserveContact(ctx context.Context, id int64) error {
-	return m.store.observe(ctx, id, time.Now().Unix())
+func (m *Manager) ObserveContact(ctx context.Context, id int64, ownerRevision int64) error {
+	return m.store.observe(ctx, id, time.Now().Unix(), ownerRevision)
 }
 
 func (m *Manager) Reconcile(ctx context.Context) error {
@@ -204,6 +209,15 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	}
 	if err := m.reconcileDeletions(ctx); err != nil {
 		failures = append(failures, err)
+	}
+	disabled, err := m.store.disabledPeers(ctx)
+	if err != nil {
+		failures = append(failures, err)
+	}
+	for _, peer := range disabled {
+		if err := m.changeConnection(ctx, peer.MachineID, false, false); err != nil {
+			failures = append(failures, err)
+		}
 	}
 	peers, err := m.store.enabledPeers(ctx)
 	if err != nil {

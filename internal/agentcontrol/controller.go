@@ -18,8 +18,8 @@ type Heartbeat struct {
 
 // Routes is the consumer-owned seam to the publication module.
 type Routes interface {
-	Control(context.Context, int64) (uint64, []agentprotocol.Route, error)
-	Acknowledge(context.Context, int64, Acknowledgment) error
+	Control(context.Context, int64, int64) (uint64, []agentprotocol.Route, error)
+	Acknowledge(context.Context, int64, Acknowledgment, int64) error
 }
 type Controller struct {
 	machines *machine.Manager
@@ -46,12 +46,12 @@ func (c *Controller) Heartbeat(ctx context.Context, credential string, input Hea
 		return agentprotocol.Control{}, err
 	}
 	if c.routes != nil && input.Ready {
-		if err = c.routes.Acknowledge(ctx, conn.ID, Acknowledgment{Applied: input.AppliedGeneration, Failed: input.FailedGeneration, Error: input.ApplyError}); err != nil {
+		if err = c.routes.Acknowledge(ctx, conn.ID, Acknowledgment{Applied: input.AppliedGeneration, Failed: input.FailedGeneration, Error: input.ApplyError}, conn.OwnerRevision); err != nil {
 			return agentprotocol.Control{}, err
 		}
 	}
 	if input.Ready {
-		if err = c.machines.ObserveContact(ctx, conn.ID); err != nil {
+		if err = c.machines.ObserveContact(ctx, conn.ID, conn.OwnerRevision); err != nil {
 			return agentprotocol.Control{}, err
 		}
 	}
@@ -64,7 +64,7 @@ func (c *Controller) configuration(ctx context.Context, conn machine.Connection)
 	}
 	control := agentprotocol.Control{MachineID: conn.ID, Address: conn.Address, Tunnel: details, ProxyToken: conn.ProxyToken, Routes: []agentprotocol.Route{}}
 	if c.routes != nil {
-		generation, routes, err := c.routes.Control(ctx, conn.ID)
+		generation, routes, err := c.routes.Control(ctx, conn.ID, conn.OwnerRevision)
 		if err != nil {
 			return control, err
 		}

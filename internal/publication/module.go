@@ -190,12 +190,12 @@ func (m *Module) Retry(ctx context.Context, actor Actor, id string) error {
 		return candidate.State == "Ошибка", nil
 	})
 }
-func (m *Module) Control(ctx context.Context, machineID int64) (uint64, []agentprotocol.Route, error) {
+func (m *Module) Control(ctx context.Context, machineID int64, ownerRevision int64) (uint64, []agentprotocol.Route, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.store.control(ctx, machineID)
+	return m.store.control(ctx, machineID, ownerRevision)
 }
-func (m *Module) Acknowledge(ctx context.Context, machineID int64, ack Acknowledgment) error {
+func (m *Module) Acknowledge(ctx context.Context, machineID int64, ack Acknowledgment, ownerRevision int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ack.Applied > 1<<62 || ack.Failed > 1<<62 {
@@ -212,7 +212,7 @@ func (m *Module) Acknowledge(ctx context.Context, machineID int64, ack Acknowled
 			return acknowledgmentPlan{}, fail(Conflict, "неизвестная версия маршрутов")
 		}
 		return acknowledgmentPlan{Ready: ack.Applied >= previous, Failed: ack.Failed > ack.Applied && ack.Failed > previous && ack.Failed == generation, ReadyState: "Настроена", FailedState: "Ошибка"}, nil
-	})
+	}, ownerRevision)
 }
 func (m *Module) url(label string) string {
 	host := label + "." + m.zone

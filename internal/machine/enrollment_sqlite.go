@@ -107,7 +107,7 @@ func (s *sqliteStore) finalizeEnrollment(ctx context.Context, intent enrollmentI
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE machines SET code_hash=NULL,code_expires_at=NULL,credential_hash=?,public_key=?,tunnel_address=?,proxy_token=?,enabled=1 WHERE id=? AND code_hash=? AND credential_hash IS NULL AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?) AND EXISTS(SELECT 1 FROM machine_enrollments WHERE machine_id=? AND lease_owner=? AND phase='applying' AND lease_until>?)`, intent.credentialHash, intent.connection.PublicKey, intent.connection.Address, intent.connection.ProxyToken, intent.connection.ID, intent.codeHash, intent.connection.OwnerRevision, intent.connection.ID, intent.owner, now)
+	result, err := tx.ExecContext(ctx, `UPDATE machines SET code_hash=NULL,code_expires_at=NULL,credential_hash=?,public_key=?,tunnel_address=?,proxy_token=?,enabled=1,desired_enabled=1,access_state='Подключено',access_error='' WHERE id=? AND code_hash=? AND credential_hash IS NULL AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?) AND EXISTS(SELECT 1 FROM machine_enrollments WHERE machine_id=? AND lease_owner=? AND phase='applying' AND lease_until>?)`, intent.credentialHash, intent.connection.PublicKey, intent.connection.Address, intent.connection.ProxyToken, intent.connection.ID, intent.codeHash, intent.connection.OwnerRevision, intent.connection.ID, intent.owner, now)
 	if err != nil {
 		return err
 	}

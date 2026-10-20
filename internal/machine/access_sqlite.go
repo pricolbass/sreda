@@ -7,23 +7,35 @@ import (
 	"time"
 )
 
-func (s *sqliteStore) reserveConnectionOperation(ctx context.Context, id int64, enabled bool, owner string, now time.Time, requireEnabled bool) (connectionOperation, error) {
+func (s *sqliteStore) reserveConnectionOperation(ctx context.Context, id int64, enabled bool, owner string, now time.Time, requireEnabled bool, command ...accessCommand) (connectionOperation, error) {
 	op := connectionOperation{owner: owner, enabled: enabled}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return op, err
 	}
 	defer tx.Rollback()
-	var deleting bool
-	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),enabled,EXISTS(SELECT 1 FROM machine_deletions WHERE machine_id=machines.id) FROM machines WHERE id=?`, id).Scan(&op.connection.ID, &op.connection.OwnerID, &op.connection.PublicKey, &op.connection.Address, &op.connection.Enabled, &deleting)
+	var deleting, blocked, desired bool
+	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,COALESCE(public_key,''),COALESCE(tunnel_address,''),enabled,desired_enabled,access_revision,(SELECT access_revision FROM users WHERE id=machines.owner_id),(SELECT blocked FROM users WHERE id=machines.owner_id),EXISTS(SELECT 1 FROM machine_deletions WHERE machine_id=machines.id) FROM machines WHERE id=?`, id).Scan(&op.connection.ID, &op.connection.OwnerID, &op.connection.PublicKey, &op.connection.Address, &op.connection.Enabled, &desired, &op.connection.Revision, &op.connection.OwnerRevision, &blocked, &deleting)
 	if errors.Is(err, sql.ErrNoRows) {
 		return op, failure(NotFound, "Машина не найдена")
 	}
 	if err != nil {
 		return op, err
 	}
-	if requireEnabled && (deleting || !op.connection.Enabled) {
+	if len(command) > 0 {
+		c := command[0]
+		if op.connection.OwnerID != c.actor.ID && (!c.actor.Admin || enabled) {
+			return op, failure(NotFound, "Машина не найдена")
+		}
+		if c.revision != op.connection.Revision {
+			return op, failure(Conflict, "Подключение уже изменилось. Обновите страницу")
+		}
+	}
+	if requireEnabled && (deleting || !desired || blocked) {
 		return connectionOperation{}, nil
+	}
+	if enabled && blocked {
+		return op, failure(Unauthorized, "Доступ пользователя закрыт")
 	}
 	if deleting {
 		return op, failure(Invalid, "Машина уже удаляется")
@@ -38,7 +50,13 @@ func (s *sqliteStore) reserveConnectionOperation(ctx context.Context, id int64, 
 	if count != 0 {
 		return op, failure(Unavailable, "Предыдущее изменение подключения ещё ожидает очистки")
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=0 WHERE id=?", id); err != nil {
+	if len(command) > 0 {
+		op.connection.Revision++
+		if _, err := tx.ExecContext(ctx, "UPDATE machines SET access_revision=? WHERE id=?", op.connection.Revision, id); err != nil {
+			return op, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=0,desired_enabled=?,access_state=?,access_error='' WHERE id=?", enabled, map[bool]string{true: "Настраивается", false: "Отключается"}[enabled], id); err != nil {
 		return op, err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO machine_connection_ops(machine_id,desired_enabled,phase,lease_owner,lease_until) VALUES(?,?,'working',?,?)", id, enabled, owner, now.Add(enrollmentLease).Unix()); err != nil {
@@ -52,7 +70,7 @@ func (s *sqliteStore) finishConnectionOperation(ctx context.Context, op connecti
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE machines SET enabled=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM machine_deletions WHERE machine_id=machines.id) AND EXISTS(SELECT 1 FROM machine_connection_ops WHERE machine_id=machines.id AND lease_owner=? AND phase='working' AND lease_until>?)`, op.enabled, op.connection.ID, op.owner, time.Now().Unix())
+	result, err := tx.ExecContext(ctx, `UPDATE machines SET enabled=?,access_state=?,access_error='' WHERE id=? AND access_revision=? AND desired_enabled=? AND (?=0 OR EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0 AND u.access_revision=?)) AND NOT EXISTS(SELECT 1 FROM machine_deletions WHERE machine_id=machines.id) AND EXISTS(SELECT 1 FROM machine_connection_ops WHERE machine_id=machines.id AND lease_owner=? AND phase='working' AND lease_until>?)`, op.enabled, map[bool]string{true: "Подключено", false: "Отключено"}[op.enabled], op.connection.ID, op.connection.Revision, op.enabled, op.enabled, op.connection.OwnerRevision, op.owner, time.Now().Unix())
 	if err != nil {
 		return err
 	}

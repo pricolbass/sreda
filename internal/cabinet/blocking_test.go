@@ -128,6 +128,22 @@ func TestBlockDisablesBothModesRevokesCodesAndPreservesOtherOwner(t *testing.T) 
 	if got := enroll(unused, "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", strings.Repeat("u", 43)); got != 401 {
 		t.Fatalf("unblock revived code %d", got)
 	}
+	if w := alice.request("POST", "/machines/1/enable", url.Values{"revision": {"1"}}); w.Code != 409 {
+		t.Fatalf("old machine intent %d", w.Code)
+	}
+	if w := alice.request("POST", "/machines/1/enable", url.Values{"revision": {"2"}}); w.Code != 303 {
+		t.Fatalf("explicit machine enable %d %s", w.Code, w.Body.String())
+	}
+	if w := agentContact(t, alice, credential, `{"ready":true,"applied_generation":1}`); w.Code != 200 {
+		t.Fatalf("enabled agent %d", w.Code)
+	}
+	if w := alice.request("POST", "/publications/"+p.ID+"/enable", url.Values{"revision": {"2"}}); w.Code != 303 {
+		t.Fatalf("explicit publication enable %d", w.Code)
+	}
+	if p := publicationDetail(t, alice, p.ID); p.State != "Настраивается" {
+		t.Fatal("new agent map not awaited")
+	}
+
 }
 
 func TestBlockDoesNotConfirmPendingEnrollmentOrPeerFailureAndResumesAfterRestart(t *testing.T) {
@@ -166,5 +182,99 @@ func TestBlockDoesNotConfirmPendingEnrollmentOrPeerFailureAndResumesAfterRestart
 	}
 	if len(gateway.peers) != 0 {
 		t.Fatal("orphan remained")
+	}
+}
+
+type pausedBlockGateway struct {
+	testGateway
+	started, release chan struct{}
+}
+
+func (g *pausedBlockGateway) ApplyPeer(context.Context, tunnel.Peer) error {
+	close(g.started)
+	<-g.release
+	return nil
+}
+func TestBlockWaitsForLiveEnrollmentAndOldApplyCannotPromote(t *testing.T) {
+	app, admin, dir := setup(t)
+	admin.login()
+	alice := createOrdinary(t, admin, "alice")
+	signIn(alice, "alice", password)
+	code := createEnrollmentCode(t, alice, "Racing")
+	gateway := &pausedBlockGateway{started: make(chan struct{}), release: make(chan struct{})}
+	app.SetGateway(gateway)
+	second, err := cabinet.Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	second.SetGateway(gateway)
+	otherAdmin := *admin
+	otherAdmin.handler = second.Handler()
+	done := make(chan int, 1)
+	go func() {
+		done <- enrollmentRequest(alice.handler, context.Background(), code, "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", strings.Repeat("v", 43)).Code
+	}()
+	<-gateway.started
+	otherAdmin.request("GET", "/admin/users", nil)
+	if w := otherAdmin.request("POST", "/admin/users/2/block", url.Values{"revision": {"1"}}); w.Code != 503 {
+		close(gateway.release)
+		t.Fatalf("live apply falsely closed %d %s", w.Code, w.Body.String())
+	}
+	if w := otherAdmin.request("POST", "/admin/users/2/unblock", url.Values{"revision": {"2"}}); w.Code != 409 {
+		close(gateway.release)
+		t.Fatalf("live apply allowed unblock %d", w.Code)
+	}
+	close(gateway.release)
+	if got := <-done; got == 201 {
+		t.Fatal("pre-block apply promoted")
+	}
+	if w := otherAdmin.request("POST", "/admin/users/2/block", url.Values{"revision": {"2"}}); w.Code != 303 {
+		t.Fatalf("settled closure %d %s", w.Code, w.Body.String())
+	}
+	if w := agentContact(t, alice, strings.Repeat("v", 43), `{"ready":true}`); w.Code != 401 {
+		t.Fatal("old credential enabled")
+	}
+}
+
+func TestPasswordRecoveryDoesNotBypassBlockAndStaleUnblockCannotWin(t *testing.T) {
+	_, admin, _ := setup(t)
+	admin.login()
+	alice := createOrdinary(t, admin, "alice")
+	signIn(alice, "alice", password)
+	if w := alice.request("GET", "/admin/users", nil); w.Code != 403 {
+		t.Fatalf("ordinary admin access %d", w.Code)
+	}
+	admin.request("GET", "/admin/users", nil)
+	if w := admin.request("POST", "/admin/users/1/block", url.Values{"revision": {"1"}}); w.Code != 404 {
+		t.Fatalf("admin can be blocked %d", w.Code)
+	}
+	if w := admin.request("POST", "/admin/users/2/block", url.Values{"revision": {"1"}}); w.Code != 303 {
+		t.Fatal(w.Code)
+	}
+	link := resetLink(t, admin, "2")
+	anonymous := visitor(t, admin)
+	anonymous.request("GET", link, nil)
+	if w := anonymous.request("POST", link, url.Values{"password": {newPassword}}); w.Code != 303 {
+		t.Fatal(w.Code)
+	}
+	if got := signIn(alice, "alice", newPassword); got != 401 {
+		t.Fatalf("password reset bypassed block %d", got)
+	}
+	if w := admin.request("POST", "/admin/users/2/unblock", url.Values{"revision": {"1"}}); w.Code != 409 {
+		t.Fatalf("stale unblock %d", w.Code)
+	}
+	if w := admin.request("POST", "/admin/users/2/unblock", url.Values{"revision": {"2"}}); w.Code != 303 {
+		t.Fatal(w.Code)
+	}
+	if got := signIn(alice, "alice", newPassword); got != 303 {
+		t.Fatal(got)
+	}
+	admin.request("GET", "/admin/users", nil)
+	if w := admin.request("POST", "/admin/users/2/block", url.Values{"revision": {"3"}}); w.Code != 303 {
+		t.Fatal(w.Code)
+	}
+	if w := admin.request("POST", "/admin/users/2/unblock", url.Values{"revision": {"2"}}); w.Code != 409 {
+		t.Fatalf("older unblock overrode newer block %d", w.Code)
 	}
 }

@@ -39,7 +39,7 @@ func InstallManualSchema(tx *sql.Tx) error {
 }
 
 func (s *sqliteStore) createWithMode(ctx context.Context, ownerID int64, name string, mode Mode, code []byte, expiry, created int64) (int64, error) {
-result, err := s.db.ExecContext(ctx, `INSERT INTO machines(id,owner_id,name,code_hash,code_expires_at,created_at,mode)SELECT (SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM machines UNION ALL SELECT id FROM machine_tombstones)),?,?,?,?,?,? FROM users WHERE id=? AND blocked=0`, ownerID, name, code, expiry, created, mode,ownerID)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO machines(id,owner_id,name,code_hash,code_expires_at,created_at,mode)SELECT (SELECT COALESCE(MAX(id),0)+1 FROM (SELECT id FROM machines UNION ALL SELECT id FROM machine_tombstones)),?,?,?,?,?,? FROM users WHERE id=? AND blocked=0`, ownerID, name, code, expiry, created, mode, ownerID)
 	if err != nil {
 		return 0, err
 	}

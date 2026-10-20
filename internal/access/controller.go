@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"sreda/internal/identity"
+	"time"
 )
 
 type Accounts interface {
@@ -26,12 +27,15 @@ func (c *Controller) Block(ctx context.Context, actorID, userID, revision int64)
 	if err != nil {
 		return err
 	}
-	closeErr := errors.Join(c.publications.DisableOwner(ctx, userID), c.machines.DisableOwner(ctx, userID))
+	pubErr := c.publications.DisableOwner(ctx, userID)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	closeErr := errors.Join(pubErr, c.machines.DisableOwner(cleanupCtx, userID))
 	problem := ""
 	if closeErr != nil {
 		problem = closeErr.Error()
 	}
-	return errors.Join(closeErr, c.accounts.FinishBlock(ctx, userID, account.Revision, problem))
+	return errors.Join(closeErr, c.accounts.FinishBlock(cleanupCtx, userID, account.Revision, problem))
 }
 func (c *Controller) Unblock(ctx context.Context, actorID, userID, revision int64) error {
 	return c.accounts.Unblock(ctx, actorID, userID, revision)
