@@ -79,9 +79,7 @@ func serve(dir, origin, socket string, output io.Writer) error {
 	reconcileDone := make(chan struct{})
 	defer func() { stop(); <-reconcileDone }()
 	reconcile := func() {
-		operationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		defer cancel()
-		if err := app.ReconcileMachinePeers(operationCtx); err != nil && ctx.Err() == nil {
+		if err := app.ReconcileMachinePeers(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintln(output, "Восстановление сохранённых изменений не подтверждено; повтор через 30 секунд.")
 		}
 	}

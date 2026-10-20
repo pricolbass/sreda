@@ -33,7 +33,7 @@ func TestRecoveryServerChild(t *testing.T) {
 
 // The child runs the production CLI and restoration loop. Only the external
 // privileged helper is replaced with a local Unix HTTP endpoint.
-func recoveryServerProcess(t *testing.T, dataDir string, helper http.Handler) (http.Handler, func()) {
+func recoveryServerProcess(t *testing.T, dataDir string, helper http.Handler, startupTimeout ...time.Duration) (http.Handler, func()) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "srrec-")
 	if err != nil {
@@ -109,9 +109,15 @@ func recoveryServerProcess(t *testing.T, dataDir string, helper http.Handler) (h
 		w.WriteHeader(response.StatusCode)
 		io.Copy(w, response.Body)
 	})
-	deadline := time.Now().Add(10 * time.Second)
+	budget := 10 * time.Second
+	if len(startupTimeout) > 0 {
+		budget = startupTimeout[0]
+	}
+	startupCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	deadline, _ := startupCtx.Deadline()
 	for time.Now().Before(deadline) {
-		request, _ := http.NewRequest("GET", origin+"/login", nil)
+		request, _ := http.NewRequestWithContext(startupCtx, "GET", origin+"/login", nil)
 		request.URL.Scheme = "http"
 		request.Header.Set("X-Forwarded-Proto", "https")
 		response, err := transport.RoundTrip(request)
