@@ -16,26 +16,14 @@ func (m *Module) SuspendMachine(ctx context.Context, id, revision, ownerRevision
 		m.mu.Unlock()
 		return err
 	}
-	routes := map[string]*publicationRoute{}
-	for _, p := range pubs {
-		if r := m.forwarder.routes[p.ID]; r != nil {
-			r.stopAdmission()
-			routes[p.ID] = r
-		}
-	}
+	routes := m.stopRoutesLocked(pubs)
 	m.mu.Unlock()
+	cancelRoutes(routes)
 	var failures []error
 	for _, p := range pubs {
-		var closeErr error
-		closeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if r := routes[p.ID]; r != nil {
-			closeErr = r.closeAndWait(closeCtx)
-		}
-		cancel()
+		closeErr := drainRoute(ctx, routes[p.ID], 10*time.Second)
 		m.mu.Lock()
-		if closeErr == nil && m.forwarder.routes[p.ID] == routes[p.ID] {
-			delete(m.forwarder.routes, p.ID)
-		}
+		m.evictDrainedRouteLocked(p.ID, routes[p.ID], closeErr)
 		if closeErr != nil {
 			failures = append(failures, fail(Unavailable, "Закрытие прежних соединений публикации не подтверждено"))
 		}

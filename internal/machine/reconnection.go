@@ -18,10 +18,53 @@ func (r Reconnection) MachineID() int64     { return r.connection.ID }
 func (r Reconnection) Revision() int64      { return r.connection.Revision }
 func (r Reconnection) OwnerRevision() int64 { return r.connection.OwnerRevision }
 
+type reconnectionCandidate struct {
+	Connection                                Connection
+	OwnerBlocked, Deleting, Pending           bool
+	SourceRevision, OwnerRevision, LeaseUntil int64
+}
+type reconnectionDecision struct {
+	Fresh          bool
+	SourceRevision int64
+}
+
 func (m *Manager) PrepareReconnect(ctx context.Context, actor Actor, id, revision int64) (Reconnection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.store.prepareReconnect(ctx, actor, id, revision, token(), time.Now())
+	now := time.Now()
+	return m.store.prepareReconnect(ctx, id, token(), now, func(candidate reconnectionCandidate) (reconnectionDecision, error) {
+		if candidate.Connection.OwnerID != actor.ID {
+			return reconnectionDecision{}, failure(NotFound, "Машина не найдена")
+		}
+		if candidate.OwnerBlocked {
+			return reconnectionDecision{}, failure(Unauthorized, "Доступ пользователя закрыт")
+		}
+		if candidate.Deleting {
+			return reconnectionDecision{}, failure(Conflict, "Машина уже удаляется")
+		}
+		fresh := !candidate.Pending
+		if candidate.Pending {
+			if candidate.LeaseUntil > now.Unix() {
+				return reconnectionDecision{}, failure(Unavailable, "Переподключение ещё выполняется")
+			}
+			if candidate.OwnerRevision != candidate.Connection.OwnerRevision || candidate.Connection.Revision != candidate.SourceRevision+1 {
+				if revision != candidate.Connection.Revision {
+					return reconnectionDecision{}, failure(Conflict, "Права или подключение изменились; обновите страницу")
+				}
+				fresh = true
+			} else if revision != candidate.SourceRevision && revision != candidate.Connection.Revision {
+				return reconnectionDecision{}, failure(Conflict, "Подключение изменилось; обновите страницу")
+			}
+		}
+		source := candidate.SourceRevision
+		if fresh {
+			if revision != candidate.Connection.Revision {
+				return reconnectionDecision{}, failure(Conflict, "Подключение изменилось; обновите страницу")
+			}
+			source = revision
+		}
+		return reconnectionDecision{Fresh: fresh, SourceRevision: source}, nil
+	})
 }
 func (m *Manager) ReconnectFailed(ctx context.Context, r Reconnection, message string) error {
 	return m.store.releaseReconnect(ctx, r, message)

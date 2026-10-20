@@ -37,3 +37,20 @@ func (s *sqliteStore) claimClosure(ctx context.Context, id string, revision int6
 	n, err := result.RowsAffected()
 	return n == 1, err
 }
+
+func (s *sqliteStore) pendingManualConfirmations(ctx context.Context) ([]manualConfirmationCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.access_revision,u.access_revision,m.mode,m.enabled,m.desired_enabled,u.blocked,EXISTS(SELECT 1 FROM machine_connection_ops o WHERE o.machine_id=m.id) OR EXISTS(SELECT 1 FROM machine_enrollments e WHERE e.machine_id=m.id) OR EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id) OR EXISTS(SELECT 1 FROM machine_reconnections r WHERE r.machine_id=m.id) FROM machines m JOIN users u ON u.id=m.owner_id WHERE EXISTS(SELECT 1 FROM publications p WHERE p.machine_id=m.id AND p.desired_enabled=1 AND p.state='Настраивается' AND NOT EXISTS(SELECT 1 FROM publication_deletions d WHERE d.publication_id=p.id))`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var candidates []manualConfirmationCandidate
+	for rows.Next() {
+		var c manualConfirmationCandidate
+		if err := rows.Scan(&c.Identity.MachineID, &c.Identity.Revision, &c.Identity.OwnerRevision, &c.Mode, &c.Enabled, &c.DesiredEnabled, &c.OwnerBlocked, &c.PendingOperation); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, c)
+	}
+	return candidates, rows.Err()
+}

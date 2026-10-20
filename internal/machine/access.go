@@ -13,13 +13,27 @@ type connectionOperation struct {
 	enabled    bool
 }
 
+// connectionCandidate is a transaction snapshot; policy runs before any writes.
+type connectionCandidate struct {
+	Connection       Connection
+	Deleting         bool
+	OwnerBlocked     bool
+	DesiredEnabled   bool
+	Replacing        bool
+	OperationPending bool
+}
+type connectionDecision struct {
+	Change, AdvanceRevision bool
+	State                   string
+}
+
 func (m *Manager) SetEnabled(ctx context.Context, id int64, enabled bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.gateway == nil {
 		return failure(Unavailable, "сетевой шлюз не настроен")
 	}
-	return m.changeConnection(ctx, id, enabled, false)
+	return m.changeConnection(ctx, id, enabled, nil)
 }
 
 type accessCommand struct {
@@ -36,10 +50,48 @@ func (m *Manager) ChangeAccess(ctx context.Context, actor Actor, id, revision in
 	if m.gateway == nil {
 		return failure(Unavailable, "Сетевой шлюз не настроен")
 	}
-	return m.changeConnection(ctx, id, enabled, false, accessCommand{actor, revision})
+	return m.changeConnection(ctx, id, enabled, nil, accessCommand{actor, revision})
 }
-func (m *Manager) changeConnection(ctx context.Context, id int64, enabled, requireEnabled bool, command ...accessCommand) error {
-	op, err := m.store.reserveConnectionOperation(ctx, id, enabled, token(), time.Now(), requireEnabled, command...)
+func (m *Manager) changeConnection(ctx context.Context, id int64, enabled bool, recovery *connectionRecovery, command ...accessCommand) error {
+	op, err := m.store.reserveConnectionOperation(ctx, id, enabled, token(), time.Now(), recovery != nil && enabled, func(candidate connectionCandidate) (connectionDecision, error) {
+		if len(command) > 0 {
+			c := command[0]
+			if candidate.Connection.OwnerID != c.actor.ID {
+				return connectionDecision{}, failure(NotFound, "Машина не найдена")
+			}
+			if c.revision != candidate.Connection.Revision {
+				return connectionDecision{}, failure(Conflict, "Подключение уже изменилось. Обновите страницу")
+			}
+		}
+		if recovery != nil {
+			if candidate.Deleting || candidate.Replacing ||
+				candidate.Connection.Revision != recovery.Revision ||
+				candidate.Connection.OwnerRevision != recovery.OwnerRevision ||
+				enabled != (candidate.DesiredEnabled && !candidate.OwnerBlocked) {
+				return connectionDecision{}, nil
+			}
+		}
+		if enabled && candidate.Replacing {
+			return connectionDecision{}, failure(Unavailable, "Переподключение ожидает очистки")
+		}
+		if enabled && candidate.OwnerBlocked {
+			return connectionDecision{}, failure(Unauthorized, "Доступ пользователя закрыт")
+		}
+		if candidate.Deleting {
+			return connectionDecision{}, failure(Invalid, "Машина уже удаляется")
+		}
+		if candidate.Connection.PublicKey == "" {
+			return connectionDecision{}, failure(Invalid, "Машина ещё не подключена")
+		}
+		if candidate.OperationPending {
+			return connectionDecision{}, failure(Unavailable, "Предыдущее изменение подключения ещё ожидает очистки")
+		}
+		state := "Отключается"
+		if enabled {
+			state = "Настраивается"
+		}
+		return connectionDecision{Change: true, AdvanceRevision: len(command) > 0, State: state}, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -102,4 +154,10 @@ func (m *Manager) reconcileConnectionOperations(ctx context.Context) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// connectionRecovery fences restoration against the snapshot's connection and
+// owner epochs. Restoration may apply current intent, never replace newer intent.
+type connectionRecovery struct {
+	Revision, OwnerRevision int64
 }

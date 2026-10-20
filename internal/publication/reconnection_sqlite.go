@@ -57,7 +57,7 @@ func (s *sqliteStore) confirmManual(ctx context.Context, identity agentprotocol.
 	if err := activeMachine(ctx, tx, identity); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE publications SET state='Настроена',error='' WHERE machine_id=? AND desired_enabled=1 AND EXISTS(SELECT 1 FROM machines m WHERE m.id=publications.machine_id AND m.mode='manual') AND NOT EXISTS(SELECT 1 FROM publication_deletions d WHERE d.publication_id=publications.id)`, identity.MachineID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE publications SET state='Настроена',error='' WHERE machine_id=? AND desired_enabled=1 AND EXISTS(SELECT 1 FROM machines m WHERE m.id=publications.machine_id AND m.mode='manual' AND m.desired_enabled=1 AND NOT EXISTS(SELECT 1 FROM machine_connection_ops o WHERE o.machine_id=m.id) AND NOT EXISTS(SELECT 1 FROM machine_enrollments e WHERE e.machine_id=m.id) AND NOT EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id) AND NOT EXISTS(SELECT 1 FROM machine_reconnections r WHERE r.machine_id=m.id)) AND NOT EXISTS(SELECT 1 FROM publication_deletions d WHERE d.publication_id=publications.id)`, identity.MachineID); err != nil {
 		return err
 	}
 	return tx.Commit()

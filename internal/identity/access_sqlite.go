@@ -23,33 +23,20 @@ func (s sqliteStore) accountAccess(ctx context.Context) ([]AccountAccess, error)
 	}
 	return out, rows.Err()
 }
-func (s sqliteStore) block(ctx context.Context, actorID, userID, revision int64) (AccountAccess, error) {
+func (s sqliteStore) block(ctx context.Context, actorID, userID int64, decide func(accountAccessCandidate) (AccountAccess, error)) (AccountAccess, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return AccountAccess{}, err
 	}
 	defer tx.Rollback()
-	var role string
-	if err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id=?`, actorID).Scan(&role); err != nil || role != "admin" {
-		return AccountAccess{}, Forbidden
+	candidate, err := readAccountAccess(ctx, tx, actorID, userID)
+	if err != nil {
+		return AccountAccess{}, err
 	}
-	var a AccountAccess
-	err = tx.QueryRowContext(ctx, `SELECT id,login,blocked,access_revision,access_state,access_error FROM users WHERE id=? AND role='user'`, userID).Scan(&a.ID, &a.Login, &a.Blocked, &a.Revision, &a.State, &a.Error)
-	if errors.Is(err, sql.ErrNoRows) {
-		return a, UserNotFound
-	}
+	a, err := decide(candidate)
 	if err != nil {
 		return a, err
 	}
-	if a.Revision != revision {
-		return a, AccessConflict
-	}
-	if !a.Blocked {
-		a.Revision++
-	}
-	a.Blocked = true
-	a.State = "Отключение выполняется"
-	a.Error = ""
 	if _, err = tx.ExecContext(ctx, `UPDATE users SET blocked=1,access_revision=?,access_state=?,access_error='' WHERE id=?`, a.Revision, a.State, userID); err != nil {
 		return a, err
 	}
@@ -58,16 +45,12 @@ func (s sqliteStore) block(ctx context.Context, actorID, userID, revision int64)
 	}
 	return a, tx.Commit()
 }
-func (s sqliteStore) finishBlock(ctx context.Context, id, revision int64, lease, problem string) error {
+func (s sqliteStore) finishBlock(ctx context.Context, id, revision int64, lease, state, problem string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	state := "Доступ закрыт"
-	if problem != "" {
-		state = "Ошибка закрытия доступа"
-	}
 	result, err := tx.ExecContext(ctx, `UPDATE users SET access_state=?,access_error=? WHERE id=? AND blocked=1 AND access_revision=? AND EXISTS(SELECT 1 FROM user_closures c WHERE c.user_id=users.id AND c.lease_owner=? AND c.revision=? AND c.lease_until>?)`, state, problem, id, revision, lease, revision, time.Now().Unix())
 	if err != nil {
 		return err
@@ -84,39 +67,38 @@ func (s sqliteStore) finishBlock(ctx context.Context, id, revision int64, lease,
 	}
 	return tx.Commit()
 }
-func (s sqliteStore) unblock(ctx context.Context, actorID, id, revision int64) error {
+func (s sqliteStore) unblock(ctx context.Context, actorID, id int64, decide func(accountAccessCandidate) (accountAccessDecision, error)) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var role string
-	if err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id=?`, actorID).Scan(&role); err != nil || role != "admin" {
-		return Forbidden
-	}
-	var blocked bool
-	var rev int64
-	var state string
-	err = tx.QueryRowContext(ctx, `SELECT blocked,access_revision,access_state FROM users WHERE id=? AND role='user'`, id).Scan(&blocked, &rev, &state)
-	if errors.Is(err, sql.ErrNoRows) {
-		return UserNotFound
-	}
+	candidate, err := readAccountAccess(ctx, tx, actorID, id)
 	if err != nil {
 		return err
 	}
-	if revision != rev {
-		return AccessConflict
+	decision, err := decide(candidate)
+	if err != nil || !decision.Change {
+		return err
 	}
-	if !blocked {
-		return nil
-	}
-	if state != "Доступ закрыт" {
-		return AccessIncomplete
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET blocked=0,access_revision=access_revision+1,access_state='Вход разрешён',access_error='' WHERE id=?`, id); err != nil {
+	a := decision.Account
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET blocked=?,access_revision=?,access_state=?,access_error=? WHERE id=?`, a.Blocked, a.Revision, a.State, a.Error, id); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func readAccountAccess(ctx context.Context, tx *sql.Tx, actorID, id int64) (accountAccessCandidate, error) {
+	var candidate accountAccessCandidate
+	if err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE id=?`, actorID).Scan(&candidate.ActorRole); err != nil {
+		return candidate, nil
+	}
+	a := &candidate.Account
+	err := tx.QueryRowContext(ctx, `SELECT id,login,blocked,access_revision,access_state,access_error FROM users WHERE id=? AND role='user'`, id).Scan(&a.ID, &a.Login, &a.Blocked, &a.Revision, &a.State, &a.Error)
+	if errors.Is(err, sql.ErrNoRows) {
+		return candidate, nil
+	}
+	return candidate, err
 }
 
 // InstallClosureSchema stores only workflow ownership, never authentication secrets.

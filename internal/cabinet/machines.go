@@ -56,9 +56,10 @@ func (a *App) SetMachineEnabled(ctx context.Context, id int64, enabled bool) err
 func (a *App) ReconcileMachinePeers(ctx context.Context) error {
 	accessErr := a.access.Resume(ctx)
 	publicationErr := a.publications.Reconcile(ctx)
-	var machineErr error
+	var machineErr, manualErr error
 	if _, configured := a.machines.GatewayDetails(); configured {
 		machineErr = a.machines.Reconcile(ctx)
+		manualErr = a.publications.ReconcileManual(ctx)
 	}
-	return errors.Join(accessErr, publicationErr, machineErr)
+	return errors.Join(accessErr, publicationErr, machineErr, manualErr)
 }

@@ -40,21 +40,12 @@ func (m *Module) Delete(ctx context.Context, actor Actor, request Deletion) (Del
 		m.mu.Unlock()
 		return DeletionResult{Completed: completed}, err
 	}
-	route := m.forwarder.routes[p.ID]
-	if route != nil {
-		route.stopAdmission()
-	}
+	route := m.stopRouteLocked(p.ID)
 	m.mu.Unlock()
-	closeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if route != nil {
-		err = route.closeAndWait(closeCtx)
-	}
+	err = drainRoute(ctx, route, 10*time.Second)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err == nil && m.forwarder.routes[p.ID] == route {
-		delete(m.forwarder.routes, p.ID)
-	}
+	m.evictDrainedRouteLocked(p.ID, route, err)
 	persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer stop()
 	if err != nil {
