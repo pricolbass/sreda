@@ -1,0 +1,47 @@
+{
+  "status": "proposed_not_approved_not_run",
+  "scope": "external_debian_lxc_acceptance",
+  "environment": {
+    "gateway_cpu": null,
+    "gateway_memory_bytes": null,
+    "gateway_versions": null,
+    "client_host_limits": null,
+    "generator_limits": null,
+    "agent_machines": 80,
+    "manual_machines": 20,
+    "publications_per_machine": 2,
+    "gateway_separate_from_clients_and_generator": true
+  },
+  "workload": {
+    "model": "closed_loop_fixed_workers",
+    "route_selection": "round_robin_over_versioned_200_route_inventory",
+    "worker_share_percent": { "api": 70, "download": 20, "stream": 10 },
+    "api": { "method": "GET", "response_bytes": 1024, "pause_after_response_ms": 1000 },
+    "download": { "method": "GET", "response_bytes": 1048576, "pause_after_response_ms": 1000 },
+    "stream": { "method": "GET", "duration_seconds": 60, "chunk_bytes": 1024, "chunk_interval_ms": 1000 },
+    "idle_baseline_seconds": 900,
+    "exploration_steps": [
+      { "workers": 20, "duration_seconds": 900 },
+      { "workers": 50, "duration_seconds": 900 },
+      { "workers": 100, "duration_seconds": 900 },
+      { "workers": 200, "duration_seconds": 900 }
+    ],
+    "proposed_acceptance_soak": { "workers": 50, "duration_seconds": 14400 }
+  },
+  "acceptance_limits_to_approve_before_run": {
+    "api_p95_ms": null,
+    "api_p99_ms": null,
+    "download_ttfb_p95_ms": null,
+    "stream_open_p95_ms": null,
+    "unexpected_error_fraction": null,
+    "access_closure_deadline_ms": null,
+    "connection_return_deadline_ms": null,
+    "gateway_memory_headroom_bytes": null,
+    "late_run_memory_growth_bytes_per_hour": null,
+    "gateway_cpu_budget_percent": null,
+    "generator_cpu_ceiling_percent": null,
+    "wrong_delivery_count": 0,
+    "unexpected_access_count": 0
+  },
+  "actual_results": null
+}
