@@ -12,10 +12,16 @@ import (
 type sqliteStore struct{ db *sql.DB }
 
 func InstallSchema(tx *sql.Tx) error {
-	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS machine_control(machine_id INTEGER PRIMARY KEY REFERENCES machines(id),generation INTEGER NOT NULL DEFAULT 0,applied_generation INTEGER NOT NULL DEFAULT 0);
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS machine_control(machine_id INTEGER PRIMARY KEY REFERENCES machines(id) ON DELETE CASCADE,generation INTEGER NOT NULL DEFAULT 0,applied_generation INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS publications(id TEXT PRIMARY KEY,machine_id INTEGER NOT NULL REFERENCES machines(id),subdomain TEXT NOT NULL UNIQUE,target TEXT NOT NULL,desired_enabled INTEGER NOT NULL DEFAULT 1,state TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',generation INTEGER NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL);
  CREATE INDEX IF NOT EXISTS publications_machine ON publications(machine_id);`)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := installControlCascade(tx); err != nil {
+		return err
+	}
+	return installDeletionSchema(tx)
 }
 func (s *sqliteStore) zone(ctx context.Context) (string, error) {
 	var zone string
@@ -32,11 +38,11 @@ func (s *sqliteStore) saveZone(ctx context.Context, zone string) (string, error)
 	return s.zone(ctx)
 }
 
-const columns = `p.id,p.machine_id,p.subdomain,p.target,p.state,p.error,p.revision,u.login,m.owner_id,p.desired_enabled`
+const columns = `p.id,p.machine_id,p.subdomain,p.target,p.state,p.error,p.revision,u.login,m.owner_id,p.desired_enabled,EXISTS(SELECT 1 FROM publication_deletions d WHERE d.publication_id=p.id)`
 
 func scanPublication(row interface{ Scan(...any) error }) (Publication, error) {
 	var p Publication
-	err := row.Scan(&p.ID, &p.MachineID, &p.Subdomain, &p.Target, &p.State, &p.Error, &p.Revision, &p.Owner, &p.OwnerID, &p.DesiredEnabled)
+	err := row.Scan(&p.ID, &p.MachineID, &p.Subdomain, &p.Target, &p.State, &p.Error, &p.Revision, &p.Owner, &p.OwnerID, &p.DesiredEnabled, &p.DeletionPending)
 	return p, err
 }
 func (s *sqliteStore) get(ctx context.Context, actor Actor, id string) (Publication, error) {
@@ -188,7 +194,7 @@ func (s *sqliteStore) control(ctx context.Context, machineID int64) (uint64, []a
 		return 0, nil, err
 	}
 	routes := []agentprotocol.Route{}
-	rows, err := tx.QueryContext(ctx, "SELECT id,target,desired_enabled FROM publications WHERE machine_id=? ORDER BY id", machineID)
+	rows, err := tx.QueryContext(ctx, "SELECT id,target,desired_enabled FROM publications WHERE machine_id=? AND NOT EXISTS(SELECT 1 FROM publication_deletions d WHERE d.publication_id=publications.id) ORDER BY id", machineID)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -240,6 +246,14 @@ func (s *sqliteStore) acknowledge(ctx context.Context, machineID int64, ack Ackn
 		if _, err = tx.ExecContext(ctx, "UPDATE publications SET state=?,error=? WHERE machine_id=? AND generation>? AND generation<=? AND desired_enabled=1", plan.FailedState, ack.Error, machineID, ack.Applied, ack.Failed); err != nil {
 			return err
 		}
+	}
+	if plan.Failed {
+		if _, err = tx.ExecContext(ctx, `UPDATE publications SET state='Удаляется',error=? WHERE machine_id=? AND EXISTS(SELECT 1 FROM publication_deletions d WHERE d.publication_id=publications.id AND d.removal_generation<=?)`, ack.Error, machineID, ack.Failed); err != nil {
+			return err
+		}
+	}
+	if err = finalizeDeletions(ctx, tx, machineID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

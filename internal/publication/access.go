@@ -23,8 +23,8 @@ func (m *Module) SetEnabled(ctx context.Context, actor Actor, change AccessChang
 		if p.ID == "" || (p.OwnerID != actor.ID && (!actor.Admin || change.Enabled)) {
 			return accessDecision{}, fail(NotFound, "Публикация не найдена")
 		}
-		if change.Enabled && candidate.OwnerBlocked {
-			return accessDecision{}, fail(Conflict, "Доступ пользователя закрыт")
+if change.Enabled && candidate.OwnerBlocked {return accessDecision{},fail(Conflict,"Доступ пользователя закрыт")}
+ if p.DeletionPending {return accessDecision{},fail(Conflict,"Публикация уже удаляется")
 		}
 		if p.DesiredEnabled == change.Enabled {
 			return accessDecision{}, nil
