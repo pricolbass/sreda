@@ -17,12 +17,13 @@ func (s *sqliteStore) recordRecoveryAttempt(ctx context.Context, id int64) error
 }
 
 type recoveryPeer struct {
-	peer    tunnel.Peer
-	enabled bool
+	peer                    tunnel.Peer
+	enabled                 bool
+	revision, ownerRevision int64
 }
 
 func (s *sqliteStore) recoveryPeers(ctx context.Context) ([]recoveryPeer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.public_key,m.tunnel_address,m.desired_enabled=1 AND u.blocked=0 FROM machines m JOIN users u ON u.id=m.owner_id LEFT JOIN machine_recovery r ON r.machine_id=m.id WHERE m.public_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM machine_connection_ops o WHERE o.machine_id=m.id) AND NOT EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id) AND NOT EXISTS(SELECT 1 FROM machine_reconnections r WHERE r.machine_id=m.id) ORDER BY COALESCE(r.last_attempt,0),m.id LIMIT 100`)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.public_key,m.tunnel_address,m.desired_enabled=1 AND u.blocked=0,m.access_revision,u.access_revision FROM machines m JOIN users u ON u.id=m.owner_id LEFT JOIN machine_recovery r ON r.machine_id=m.id WHERE m.public_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM machine_connection_ops o WHERE o.machine_id=m.id) AND NOT EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id) AND NOT EXISTS(SELECT 1 FROM machine_reconnections r WHERE r.machine_id=m.id) ORDER BY COALESCE(r.last_attempt,0),m.id LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +31,7 @@ func (s *sqliteStore) recoveryPeers(ctx context.Context) ([]recoveryPeer, error)
 	var out []recoveryPeer
 	for rows.Next() {
 		var c recoveryPeer
-		if err := rows.Scan(&c.peer.MachineID, &c.peer.PublicKey, &c.peer.Address, &c.enabled); err != nil {
+		if err := rows.Scan(&c.peer.MachineID, &c.peer.PublicKey, &c.peer.Address, &c.enabled, &c.revision, &c.ownerRevision); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func (s *sqliteStore) prepareReconnect(ctx context.Context, actor Actor, id, revision int64, owner string, now time.Time) (Reconnection, error) {
+func (s *sqliteStore) prepareReconnect(ctx context.Context, id int64, owner string, now time.Time, decide func(reconnectionCandidate) (reconnectionDecision, error)) (Reconnection, error) {
 	r := Reconnection{owner: owner}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -17,50 +17,30 @@ func (s *sqliteStore) prepareReconnect(ctx context.Context, actor Actor, id, rev
 	var ownerID int64
 	var blocked, deleting bool
 	err = tx.QueryRowContext(ctx, `SELECT m.id,m.owner_id,m.access_revision,m.mode,COALESCE(m.public_key,''),COALESCE(m.tunnel_address,''),u.access_revision,u.blocked,EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id) FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=?`, id).Scan(&r.connection.ID, &ownerID, &r.connection.Revision, &r.connection.Mode, &r.connection.PublicKey, &r.connection.Address, &r.connection.OwnerRevision, &blocked, &deleting)
-	if errors.Is(err, sql.ErrNoRows) || ownerID != actor.ID {
+	if errors.Is(err, sql.ErrNoRows) {
 		return r, failure(NotFound, "Машина не найдена")
 	}
 	if err != nil {
 		return r, err
 	}
 	r.connection.OwnerID = ownerID
-	if blocked {
-		return r, failure(Unauthorized, "Доступ пользователя закрыт")
-	}
-	if deleting {
-		return r, failure(Conflict, "Машина уже удаляется")
-	}
-	var source, ownerRevision, until int64
-	err = tx.QueryRowContext(ctx, `SELECT source_revision,owner_revision,lease_until FROM machine_reconnections WHERE machine_id=?`, id).Scan(&source, &ownerRevision, &until)
+	candidate := reconnectionCandidate{Connection: r.connection, OwnerBlocked: blocked, Deleting: deleting}
+	err = tx.QueryRowContext(ctx, `SELECT source_revision,owner_revision,lease_until FROM machine_reconnections WHERE machine_id=?`, id).Scan(&candidate.SourceRevision, &candidate.OwnerRevision, &candidate.LeaseUntil)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return r, err
 	}
-
-	fresh := errors.Is(err, sql.ErrNoRows)
-	if !fresh {
-		if until > now.Unix() {
-			return r, failure(Unavailable, "Переподключение ещё выполняется")
-		}
-		if ownerRevision != r.connection.OwnerRevision || r.connection.Revision != source+1 {
-			if revision != r.connection.Revision {
-				return r, failure(Conflict, "Права или подключение изменились; обновите страницу")
-			}
-			fresh = true
-		} else if revision != source && revision != r.connection.Revision {
-			return r, failure(Conflict, "Подключение изменилось; обновите страницу")
-		}
+	candidate.Pending = err == nil
+	decision, err := decide(candidate)
+	if err != nil {
+		return r, err
 	}
-	if fresh {
-		if revision != r.connection.Revision {
-			return r, failure(Conflict, "Подключение изменилось; обновите страницу")
-		}
-		source = revision
+	if decision.Fresh {
 		r.connection.Revision++
 		if _, err = tx.ExecContext(ctx, `UPDATE machines SET enabled=0,credential_hash=NULL,code_hash=NULL,code_expires_at=NULL,last_seen=NULL,access_revision=?,access_state='Переподключение',access_error='' WHERE id=?`, r.connection.Revision, id); err != nil {
 			return r, err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO machine_reconnections(machine_id,source_revision,owner_revision,lease_owner,lease_until)VALUES(?,?,?,?,?) ON CONFLICT(machine_id)DO UPDATE SET lease_owner=excluded.lease_owner,lease_until=excluded.lease_until,source_revision=excluded.source_revision,owner_revision=excluded.owner_revision,error=''`, id, source, r.connection.OwnerRevision, owner, now.Add(enrollmentLease).Unix()); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO machine_reconnections(machine_id,source_revision,owner_revision,lease_owner,lease_until)VALUES(?,?,?,?,?) ON CONFLICT(machine_id)DO UPDATE SET lease_owner=excluded.lease_owner,lease_until=excluded.lease_until,source_revision=excluded.source_revision,owner_revision=excluded.owner_revision,error=''`, id, decision.SourceRevision, r.connection.OwnerRevision, owner, now.Add(enrollmentLease).Unix()); err != nil {
 		return r, err
 	}
 	return r, tx.Commit()

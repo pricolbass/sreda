@@ -3,6 +3,8 @@ package publication
 import (
 	"context"
 	"errors"
+	"sreda/internal/agentprotocol"
+	"sreda/internal/machine"
 	"time"
 )
 
@@ -28,21 +30,11 @@ func (m *Module) Reconcile(ctx context.Context) error {
 			failures = append(failures, err)
 			continue
 		}
-		route := m.forwarder.routes[p.ID]
-		if route != nil {
-			route.stopAdmission()
-		}
+		route := m.stopRouteLocked(p.ID)
 		m.mu.Unlock()
-		closeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		var closeErr error
-		if route != nil {
-			closeErr = route.closeAndWait(closeCtx)
-		}
-		cancel()
+		closeErr := drainRoute(ctx, route, 10*time.Second)
 		m.mu.Lock()
-		if closeErr == nil && m.forwarder.routes[p.ID] == route {
-			delete(m.forwarder.routes, p.ID)
-		}
+		m.evictDrainedRouteLocked(p.ID, route, closeErr)
 		persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		state, message := "Отключена", ""
 		if closeErr != nil {
@@ -58,4 +50,32 @@ func (m *Module) Reconcile(ctx context.Context) error {
 		failures = append(failures, closeErr, err)
 	}
 	return errors.Join(failures...)
+}
+
+// ReconcileManual confirms only committed, active manual connections. The caller
+// runs peer recovery first; failed or unfinished peer work remains ineligible.
+func (m *Module) ReconcileManual(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	candidates, err := m.store.pendingManualConfirmations(ctx)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, candidate := range candidates {
+		if candidate.Mode != machine.ManualMode || !candidate.Enabled || !candidate.DesiredEnabled || candidate.OwnerBlocked || candidate.PendingOperation {
+			continue
+		}
+		failures = append(failures, m.store.confirmManual(ctx, candidate.Identity))
+	}
+	return errors.Join(failures...)
+}
+
+type manualConfirmationCandidate struct {
+	Identity         agentprotocol.ConnectionIdentity
+	Mode             machine.Mode
+	Enabled          bool
+	DesiredEnabled   bool
+	OwnerBlocked     bool
+	PendingOperation bool
 }

@@ -59,22 +59,12 @@ func (m *Module) SetEnabled(ctx context.Context, actor Actor, change AccessChang
 		m.mu.Unlock()
 		return nil
 	}
-	route := m.forwarder.routes[p.ID]
-	if route != nil {
-		route.stopAdmission()
-	}
+	route := m.stopRouteLocked(p.ID)
 	m.mu.Unlock()
-	closeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	var closeErr error
-	if route != nil {
-		closeErr = route.closeAndWait(closeCtx)
-	}
+	closeErr := drainRoute(ctx, route, 10*time.Second)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if closeErr == nil && m.forwarder.routes[p.ID] == route {
-		delete(m.forwarder.routes, p.ID)
-	}
+	m.evictDrainedRouteLocked(p.ID, route, closeErr)
 	persistCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer stop()
 	if closeErr != nil {

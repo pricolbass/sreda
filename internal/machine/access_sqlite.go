@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func (s *sqliteStore) reserveConnectionOperation(ctx context.Context, id int64, enabled bool, owner string, now time.Time, requireEnabled bool, command ...accessCommand) (connectionOperation, error) {
+func (s *sqliteStore) reserveConnectionOperation(ctx context.Context, id int64, enabled bool, owner string, now time.Time, preserveEnabled bool, decide func(connectionCandidate) (connectionDecision, error)) (connectionOperation, error) {
 	op := connectionOperation{owner: owner, enabled: enabled}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -22,53 +22,24 @@ func (s *sqliteStore) reserveConnectionOperation(ctx context.Context, id int64, 
 	if err != nil {
 		return op, err
 	}
-	if len(command) > 0 {
-		c := command[0]
-		if op.connection.OwnerID != c.actor.ID && (!c.actor.Admin || enabled) {
-			return op, failure(NotFound, "Машина не найдена")
-		}
-		if c.revision != op.connection.Revision {
-			return op, failure(Conflict, "Подключение уже изменилось. Обновите страницу")
-		}
-	}
-	if requireEnabled && (deleting || !desired || blocked) {
-		return connectionOperation{}, nil
-	}
-	if enabled {
-		var replacing int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM machine_reconnections WHERE machine_id=?", id).Scan(&replacing); err != nil {
-			return op, err
-		}
-		if replacing > 0 {
-			if requireEnabled {
-				return connectionOperation{}, nil
-			}
-			return op, failure(Unavailable, "Переподключение ожидает очистки")
-		}
-	}
-	if enabled && blocked {
-		return op, failure(Unauthorized, "Доступ пользователя закрыт")
-	}
-	if deleting {
-		return op, failure(Invalid, "Машина уже удаляется")
-	}
-	if op.connection.PublicKey == "" {
-		return op, failure(Invalid, "Машина ещё не подключена")
-	}
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM machine_connection_ops WHERE machine_id=?", id).Scan(&count); err != nil {
+	candidate := connectionCandidate{Connection: op.connection, Deleting: deleting, OwnerBlocked: blocked, DesiredEnabled: desired}
+	if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM machine_reconnections WHERE machine_id=?),EXISTS(SELECT 1 FROM machine_connection_ops WHERE machine_id=?)", id, id).Scan(&candidate.Replacing, &candidate.OperationPending); err != nil {
 		return op, err
 	}
-	if count != 0 {
-		return op, failure(Unavailable, "Предыдущее изменение подключения ещё ожидает очистки")
+	decision, err := decide(candidate)
+	if err != nil {
+		return op, err
 	}
-	if len(command) > 0 {
+	if !decision.Change {
+		return connectionOperation{}, nil
+	}
+	if decision.AdvanceRevision {
 		op.connection.Revision++
 		if _, err := tx.ExecContext(ctx, "UPDATE machines SET access_revision=? WHERE id=?", op.connection.Revision, id); err != nil {
 			return op, err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=CASE WHEN ? THEN enabled ELSE 0 END,desired_enabled=?,access_state=?,access_error='' WHERE id=?", requireEnabled, enabled, map[bool]string{true: "Настраивается", false: "Отключается"}[enabled], id); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=CASE WHEN ? THEN enabled ELSE 0 END,desired_enabled=?,access_state=?,access_error='' WHERE id=?", preserveEnabled, enabled, decision.State, id); err != nil {
 		return op, err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO machine_connection_ops(machine_id,desired_enabled,phase,lease_owner,lease_until) VALUES(?,?,'working',?,?)", id, enabled, owner, now.Add(enrollmentLease).Unix()); err != nil {

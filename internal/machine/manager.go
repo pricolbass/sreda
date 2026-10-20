@@ -235,7 +235,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			failures = append(failures, err)
 			continue
 		}
-		if err := m.changeConnection(ctx, candidate.peer.MachineID, candidate.enabled, candidate.enabled); err != nil {
+		if err := m.changeConnection(ctx, candidate.peer.MachineID, candidate.enabled, &connectionRecovery{candidate.revision, candidate.ownerRevision}); err != nil {
 			failures = append(failures, err)
 		}
 	}

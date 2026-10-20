@@ -100,7 +100,7 @@ func (a *App) machinePage(w http.ResponseWriter, r *http.Request) {
 		view.ConnectionState = record.AccessState
 		view.ConnectionError = record.AccessError
 		view.CanEnable = record.OwnerID == user.ID && !record.DesiredEnabled && record.Enrolled && !record.DeletionPending
-		view.CanDisable = (record.OwnerID == user.ID || user.Role == "admin") && record.DesiredEnabled && !record.DeletionPending
+		view.CanDisable = record.OwnerID == user.ID && record.DesiredEnabled && !record.DeletionPending
 		views = append(views, view)
 	}
 	csrf := randomToken()
