@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sreda/internal/agentprotocol"
 	"sreda/internal/tunnel"
 	"sync"
 	"time"
@@ -60,7 +61,7 @@ type Connection struct {
 	ID, OwnerID, OwnerRevision     int64
 	Mode                           Mode
 	PublicKey, Address, ProxyToken string
-	Enabled                        bool
+	Enabled, DesiredEnabled        bool
 	LastSeen                       time.Time
 }
 type Enrollment struct {
@@ -159,7 +160,9 @@ func (m *Manager) Enroll(ctx context.Context, input EnrollInput) (Connection, er
 		}
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, enrollmentOperationTimeout)
-	err = m.gateway.ApplyPeer(operationCtx, intent.peer())
+	if intent.connection.DesiredEnabled {
+		err = m.gateway.ApplyPeer(operationCtx, intent.peer())
+	}
 	cancel()
 	if err == nil {
 		err = m.store.finalizeEnrollment(ctx, intent, time.Now().Unix())
@@ -171,7 +174,7 @@ func (m *Manager) Enroll(ctx context.Context, input EnrollInput) (Connection, er
 		}
 		return Connection{}, failure(Unavailable, "Не удалось подтвердить настройку сети; повторите подключение")
 	}
-	intent.connection.Enabled = true
+	intent.connection.Enabled = intent.connection.DesiredEnabled
 	return intent.connection, nil
 }
 func (m *Manager) AuthenticateAgent(ctx context.Context, credential string) (Connection, error) {
@@ -180,8 +183,11 @@ func (m *Manager) AuthenticateAgent(ctx context.Context, credential string) (Con
 	}
 	return m.store.agent(ctx, hash(credential))
 }
-func (m *Manager) ObserveContact(ctx context.Context, id int64, ownerRevision int64) error {
-	return m.store.observe(ctx, id, time.Now().Unix(), ownerRevision)
+func (m *Manager) ObserveContact(ctx context.Context, identity agentprotocol.ConnectionIdentity) error {
+	return m.store.observe(ctx, identity, time.Now().Unix())
+}
+func (c Connection) Identity() agentprotocol.ConnectionIdentity {
+	return agentprotocol.ConnectionIdentity{MachineID: c.ID, Revision: c.Revision, OwnerRevision: c.OwnerRevision}
 }
 
 func (m *Manager) Reconcile(ctx context.Context) error {

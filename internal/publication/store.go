@@ -179,13 +179,14 @@ func (s *sqliteStore) retry(ctx context.Context, id, nextState string, decide fu
 	}
 	return tx.Commit()
 }
-func (s *sqliteStore) control(ctx context.Context, machineID int64, ownerRevision int64) (uint64, []agentprotocol.Route, error) {
+func (s *sqliteStore) control(ctx context.Context, identity agentprotocol.ConnectionIdentity) (uint64, []agentprotocol.Route, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer tx.Rollback()
-	if err := activeMachine(ctx, tx, machineID, ownerRevision); err != nil {
+	machineID := identity.MachineID
+	if err := activeMachine(ctx, tx, identity); err != nil {
 		return 0, nil, err
 	}
 	var generation uint64
@@ -214,13 +215,14 @@ type acknowledgmentPlan struct {
 	ReadyState, FailedState string
 }
 
-func (s *sqliteStore) acknowledge(ctx context.Context, machineID int64, ack Acknowledgment, decide func(uint64, uint64) (acknowledgmentPlan, error), ownerRevision int64) error {
+func (s *sqliteStore) acknowledge(ctx context.Context, identity agentprotocol.ConnectionIdentity, ack Acknowledgment, decide func(uint64, uint64) (acknowledgmentPlan, error)) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := activeMachine(ctx, tx, machineID, ownerRevision); err != nil {
+	machineID := identity.MachineID
+	if err := activeMachine(ctx, tx, identity); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO machine_control(machine_id) VALUES(?)", machineID); err != nil {
@@ -271,10 +273,9 @@ func (s *sqliteStore) connection(ctx context.Context, label string) (Connection,
 	return c, err
 }
 
-func activeMachine(ctx context.Context, tx *sql.Tx, machineID int64, ownerRevision int64) error {
-	expected := ownerRevision
+func activeMachine(ctx context.Context, tx *sql.Tx, identity agentprotocol.ConnectionIdentity) error {
 	var id int64
-	err := tx.QueryRowContext(ctx, `SELECT m.id FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=? AND m.enabled=1 AND u.blocked=0 AND u.access_revision=?`, machineID, expected).Scan(&id)
+	err := tx.QueryRowContext(ctx, `SELECT m.id FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.id=? AND m.enabled=1 AND u.blocked=0 AND u.access_revision=? AND m.access_revision=?`, identity.MachineID, identity.OwnerRevision, identity.Revision).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fail(Unavailable, "Подключение отключено или отозвано")
 	}

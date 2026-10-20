@@ -31,7 +31,10 @@ func installMachineSchema(tx *sql.Tx) error {
 	if err := machine.InstallDeletionSchema(tx); err != nil {
 		return err
 	}
-	return machine.InstallAccessSchema(tx)
+	if err := machine.InstallAccessSchema(tx); err != nil {
+		return err
+	}
+	return machine.InstallReconnectionSchema(tx)
 }
 
 // MachineConnection is trusted application metadata; it is never rendered.

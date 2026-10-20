@@ -34,6 +34,18 @@ func (s *sqliteStore) reserveConnectionOperation(ctx context.Context, id int64, 
 	if requireEnabled && (deleting || !desired || blocked) {
 		return connectionOperation{}, nil
 	}
+	if enabled {
+		var replacing int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM machine_reconnections WHERE machine_id=?", id).Scan(&replacing); err != nil {
+			return op, err
+		}
+		if replacing > 0 {
+			if requireEnabled {
+				return connectionOperation{}, nil
+			}
+			return op, failure(Unavailable, "Переподключение ожидает очистки")
+		}
+	}
 	if enabled && blocked {
 		return op, failure(Unauthorized, "Доступ пользователя закрыт")
 	}

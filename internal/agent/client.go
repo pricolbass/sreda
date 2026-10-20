@@ -189,6 +189,14 @@ func Enroll(ctx context.Context, dir, origin, code string, client *http.Client) 
 		var protocolErr *ProtocolError
 		if errors.As(err, &protocolErr) && protocolErr.Status == 401 {
 			control, err = heartbeat(ctx, client, state, false)
+			// An intentionally disabled connection cannot heartbeat, but the committed
+			// credential and matching public key can recover empty-route metadata.
+			if errors.As(err, &protocolErr) && protocolErr.Status == 401 {
+				control, err = exchange(ctx, client, origin, "/api/agent/recover", state.Credential, struct {
+					PublicKey string `json:"public_key"`
+				}{state.PublicKey})
+			}
+
 		}
 	}
 	if err != nil {
