@@ -25,6 +25,12 @@ func (m *Manager) Block(ctx context.Context, actorID, userID, revision int64) (A
 func (m *Manager) Unblock(ctx context.Context, actorID, userID, revision int64) error {
 	return m.store.unblock(ctx, actorID, userID, revision)
 }
-func (m *Manager) FinishBlock(ctx context.Context, userID, revision int64, problem string) error {
-	return m.store.finishBlock(ctx, userID, revision, problem)
+func (m *Manager) FinishBlock(ctx context.Context, userID, revision int64, lease, problem string) error {
+	return m.store.finishBlock(ctx, userID, revision, lease, problem)
+}
+func (m *Manager) PendingClosures(ctx context.Context) ([]AccountAccess, error) {
+	return m.store.pendingClosures(ctx)
+}
+func (m *Manager) ClaimClosure(ctx context.Context, id, revision int64) (string, error) {
+	return m.store.claimClosure(ctx, id, revision, token())
 }

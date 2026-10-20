@@ -21,7 +21,10 @@ func InstallSchema(tx *sql.Tx) error {
 	if err := installControlCascade(tx); err != nil {
 		return err
 	}
-	return installDeletionSchema(tx)
+	if err := installDeletionSchema(tx); err != nil {
+		return err
+	}
+	return installRecoverySchema(tx)
 }
 func (s *sqliteStore) zone(ctx context.Context) (string, error) {
 	var zone string

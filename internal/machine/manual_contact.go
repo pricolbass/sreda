@@ -31,7 +31,7 @@ func (m *Manager) ObserveConnection(ctx context.Context, id int64) error {
 	observation := cached.(*contactObservation)
 	observation.mu.Lock()
 	defer observation.mu.Unlock()
-	now := time.Now()
+	now := m.now()
 	if !observation.checked.IsZero() && now.Sub(observation.checked) < contactObservationCache && observation.publicKey == conn.PublicKey {
 		return observation.err
 	}
@@ -45,7 +45,7 @@ func (m *Manager) ObserveConnection(ctx context.Context, id int64) error {
 	bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	latest, err := observer.LatestHandshake(bounded, tunnel.Peer{MachineID: conn.ID, PublicKey: conn.PublicKey, Address: conn.Address})
-	if err != nil || latest.After(time.Now().Add(5*time.Second)) {
+	if err != nil || latest.After(now.Add(5*time.Second)) {
 		return observation.err
 	}
 	if err = m.store.recordHandshake(bounded, conn, latest); err != nil {

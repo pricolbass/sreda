@@ -3,6 +3,7 @@ package cabinet
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sreda/internal/machine"
 	"sreda/internal/tunnel"
 )
@@ -31,7 +32,10 @@ func installMachineSchema(tx *sql.Tx) error {
 	if err := machine.InstallDeletionSchema(tx); err != nil {
 		return err
 	}
-	return machine.InstallAccessSchema(tx)
+	if err := machine.InstallAccessSchema(tx); err != nil {
+		return err
+	}
+	return machine.InstallRecoverySchema(tx)
 }
 
 // MachineConnection is trusted application metadata; it is never rendered.
@@ -44,4 +48,14 @@ func (a *App) MachineConnection(ctx context.Context, id int64) (MachineConnectio
 func (a *App) SetMachineEnabled(ctx context.Context, id int64, enabled bool) error {
 	return a.machines.SetEnabled(ctx, id, enabled)
 }
-func (a *App) ReconcileMachinePeers(ctx context.Context) error { return a.machines.Reconcile(ctx) }
+
+// ReconcileMachinePeers also resumes access workflows that own network cleanup.
+func (a *App) ReconcileMachinePeers(ctx context.Context) error {
+	accessErr := a.access.Resume(ctx)
+	publicationErr := a.publications.Reconcile(ctx)
+	var machineErr error
+	if _, configured := a.machines.GatewayDetails(); configured {
+		machineErr = a.machines.Reconcile(ctx)
+	}
+	return errors.Join(accessErr, publicationErr, machineErr)
+}

@@ -56,7 +56,7 @@ func (s *sqliteStore) reserveConnectionOperation(ctx context.Context, id int64, 
 			return op, err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=0,desired_enabled=?,access_state=?,access_error='' WHERE id=?", enabled, map[bool]string{true: "Настраивается", false: "Отключается"}[enabled], id); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE machines SET enabled=CASE WHEN ? THEN enabled ELSE 0 END,desired_enabled=?,access_state=?,access_error='' WHERE id=?", requireEnabled, enabled, map[bool]string{true: "Настраивается", false: "Отключается"}[enabled], id); err != nil {
 		return op, err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO machine_connection_ops(machine_id,desired_enabled,phase,lease_owner,lease_until) VALUES(?,?,'working',?,?)", id, enabled, owner, now.Add(enrollmentLease).Unix()); err != nil {
@@ -87,7 +87,12 @@ func (s *sqliteStore) finishConnectionOperation(ctx context.Context, op connecti
 	return tx.Commit()
 }
 func (s *sqliteStore) markConnectionCleanup(ctx context.Context, op connectionOperation) error {
-	result, err := s.db.ExecContext(ctx, "UPDATE machine_connection_ops SET phase='cleanup' WHERE machine_id=? AND lease_owner=?", op.connection.ID, op.owner)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, "UPDATE machine_connection_ops SET phase='cleanup' WHERE machine_id=? AND lease_owner=?", op.connection.ID, op.owner)
 	if err != nil {
 		return err
 	}
@@ -95,7 +100,10 @@ func (s *sqliteStore) markConnectionCleanup(ctx context.Context, op connectionOp
 	if count != 1 {
 		return failure(Unavailable, "Очистку подключения выполняет другой процесс")
 	}
-	return nil
+	if _, err = tx.ExecContext(ctx, `UPDATE machines SET enabled=0,access_state='Ошибка настройки',access_error='Настройка подключения не подтверждена; очистка и повтор выполняются автоматически' WHERE id=? AND access_revision=?`, op.connection.ID, op.connection.Revision); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *sqliteStore) finishConnectionCleanup(ctx context.Context, op connectionOperation) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM machine_connection_ops WHERE machine_id=? AND lease_owner=? AND phase='cleanup'", op.connection.ID, op.owner)

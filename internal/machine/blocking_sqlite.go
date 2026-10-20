@@ -3,7 +3,6 @@ package machine
 import (
 	"context"
 	"sreda/internal/tunnel"
-	"time"
 )
 
 func (s *sqliteStore) disableOwner(ctx context.Context, ownerID int64) ([]tunnel.Peer, error) {
@@ -133,20 +132,4 @@ func (s *sqliteStore) finishOwnerClosure(ctx context.Context, ownerID int64, pro
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE machines SET access_state=?,access_error=? WHERE owner_id=? AND desired_enabled=0`, state, problem, ownerID)
 	return err
-}
-func (s *sqliteStore) disabledPeers(ctx context.Context) ([]tunnel.Peer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.public_key,m.tunnel_address FROM machines m JOIN users u ON u.id=m.owner_id WHERE (m.desired_enabled=0 OR u.blocked=1) AND m.public_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM machine_connection_ops o WHERE o.machine_id=m.id AND o.lease_until>?) AND NOT EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id) ORDER BY m.id`, time.Now().Unix())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var peers []tunnel.Peer
-	for rows.Next() {
-		var p tunnel.Peer
-		if err := rows.Scan(&p.MachineID, &p.PublicKey, &p.Address); err != nil {
-			return nil, err
-		}
-		peers = append(peers, p)
-	}
-	return peers, rows.Err()
 }

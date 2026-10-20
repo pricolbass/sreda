@@ -14,6 +14,7 @@ import (
 	"sreda/internal/agentprotocol"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Actor struct {
@@ -77,6 +78,7 @@ type Module struct {
 	forwarder         *forwarder
 	transport         Transport
 	contactObserver   ContactObserver
+	now               func() time.Time
 }
 
 type ContactObserver interface {
@@ -87,7 +89,10 @@ type ContactObserver interface {
 // requests are served. Its cache is owned by the machine application module.
 func (m *Module) SetContactObserver(observer ContactObserver) { m.contactObserver = observer }
 
-func New(db *sql.DB, cabinetHost string, transport Transport) (*Module, error) {
+func New(db *sql.DB, cabinetHost string, transport Transport, now func() time.Time) (*Module, error) {
+	if now == nil {
+		now = time.Now
+	}
 	if transport == nil {
 		return nil, errors.New("укажите транспорт публикаций")
 	}
@@ -96,7 +101,7 @@ func New(db *sql.DB, cabinetHost string, transport Transport) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Module{store: store, zone: zone, cabinetHost: cabinetHost, forwarder: newForwarder(), transport: transport}, nil
+	return &Module{store: store, zone: zone, cabinetHost: cabinetHost, forwarder: newForwarder(), transport: transport, now: now}, nil
 }
 
 var domainPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
