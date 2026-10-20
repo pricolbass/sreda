@@ -212,7 +212,21 @@ func (m *Module) Acknowledge(ctx context.Context, machineID int64, ack Acknowled
 		return acknowledgmentPlan{Ready: ack.Applied >= previous, Failed: ack.Failed > ack.Applied && ack.Failed > previous && ack.Failed == generation, ReadyState: "Настроена", FailedState: "Ошибка"}, nil
 	})
 }
-func (m *Module) url(label string) string { return "https://" + label + "." + m.zone }
+func (m *Module) url(label string) string {
+	host := label + "." + m.zone
+	if port := m.httpsPort(); port != "443" {
+		host = net.JoinHostPort(host, port)
+	}
+	return "https://" + host
+}
+
+// The single HTTPS listener serves the cabinet and publications on one port.
+func (m *Module) httpsPort() string {
+	if _, port, err := net.SplitHostPort(m.cabinetHost); err == nil {
+		return port
+	}
+	return "443"
+}
 func (m *Module) Close(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
