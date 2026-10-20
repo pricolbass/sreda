@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sreda/internal/machine"
 	"sreda/internal/tunnel"
+	"time"
 )
 
 func installMachineSchema(tx *sql.Tx) error {
@@ -52,14 +53,29 @@ func (a *App) SetMachineEnabled(ctx context.Context, id int64, enabled bool) err
 	return a.machines.SetEnabled(ctx, id, enabled)
 }
 
-// ReconcileMachinePeers also resumes access workflows that own network cleanup.
+// ReconcileMachinePeers gives each ordered phase its own bounded opportunity.
+// All phase contexts inherit the caller's cancellation; production supplies the
+// server lifetime, so an expired phase cannot consume the next phase's budget.
 func (a *App) ReconcileMachinePeers(ctx context.Context) error {
-	accessErr := a.access.Resume(ctx)
-	publicationErr := a.publications.Reconcile(ctx)
+	accessCtx, cancelAccess := context.WithTimeout(ctx, reconciliationPhaseTimeout)
+	accessErr := a.access.Resume(accessCtx)
+	cancelAccess()
+
+	publicationCtx, cancelPublication := context.WithTimeout(ctx, reconciliationPhaseTimeout)
+	publicationErr := a.publications.Reconcile(publicationCtx)
+	cancelPublication()
+
 	var machineErr, manualErr error
 	if _, configured := a.machines.GatewayDetails(); configured {
-		machineErr = a.machines.Reconcile(ctx)
-		manualErr = a.publications.ReconcileManual(ctx)
+		machineCtx, cancelMachine := context.WithTimeout(ctx, reconciliationPhaseTimeout)
+		machineErr = a.machines.Reconcile(machineCtx)
+		cancelMachine()
+
+		manualCtx, cancelManual := context.WithTimeout(ctx, reconciliationPhaseTimeout)
+		manualErr = a.publications.ReconcileManual(manualCtx)
+		cancelManual()
 	}
 	return errors.Join(accessErr, publicationErr, machineErr, manualErr)
 }
+
+const reconciliationPhaseTimeout = 20 * time.Second
