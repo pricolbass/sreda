@@ -24,7 +24,10 @@ DNS API, выпуск сертификатов и модели ИИ в прил�
 | `internal/identity` | Учётные записи, сессии, приглашения, восстановление | Операции Manager и типизированные результаты |
 | `internal/machine` | Владение, одноразовое подключение, адреса, состояние подключения | Manager; сетевые операции через `tunnel.Gateway` |
 | `internal/agentcontrol` | Получение карты и подтверждение её версии агентом | Controller; потребительский интерфейс `Routes` |
+| `internal/access` | Подтверждённое закрытие доступа пользователя и продолжение блокировки | Controller; потребительские интерфейсы `Accounts` и `Resources` |
+| `internal/reconnection` | Замена подключения после отзыва прежнего и закрытия потоков | Controller; интерфейсы `Machines` и `Publications` |
 | `internal/publication` | Поддомены, права и желаемое/применённое состояние публикаций | Module; транспорт публикации через `Transport` |
+| `internal/setupprompt` | Текст настройки из разрешённых публичных параметров | Service; без модели и исполнения команд |
 | `internal/cabinet` | HTTP, CSRF/cookies, HTML/JSON, сборка модулей | Handler и совместимые CLI-точки входа |
 | `internal/tunnel` | Ограниченный Unix-протокол helper и подтверждение Linux-настроек | Gateway и HTTP helper |
 
