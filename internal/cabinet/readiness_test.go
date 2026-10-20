@@ -274,8 +274,8 @@ func TestLocalReadinessAcrossOwnersAndRestartThroughCaddy(t *testing.T) {
 	if w := admin.request("POST", blockPath, formRevision(t, admin, "/admin/users", blockPath)); w.Code != 503 {
 		t.Fatalf("unconfirmed block: %d %s", w.Code, w.Body.String())
 	}
-		check(first.URL, 404, "")
-		check(manualPub.URL, 404, "")
+	check(first.URL, 404, "")
+	check(manualPub.URL, 404, "")
 	check(bobPub.URL, 200, "bob/agent")
 	if w := alice.request("GET", "/", nil); w.Code != 303 {
 		t.Fatalf("old session: %d", w.Code)
@@ -311,8 +311,8 @@ func TestLocalReadinessAcrossOwnersAndRestartThroughCaddy(t *testing.T) {
 	if !strings.Contains(page.Body.String(), "<p>Доступ закрыт</p>") {
 		t.Fatal("persisted block did not resume")
 	}
-		check(first.URL, 404, "")
-		check(manualPub.URL, 404, "")
+	check(first.URL, 404, "")
+	check(manualPub.URL, 404, "")
 	check(bobPub.URL, 200, "bob/agent")
 	unblockPath := "/admin/users/2/unblock"
 	if w := admin.request("POST", unblockPath, formRevision(t, admin, "/admin/users", unblockPath)); w.Code != 303 {
