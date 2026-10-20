@@ -41,6 +41,7 @@ type Actor struct {
 	Admin bool
 }
 type Record struct {
+	Enrolled                         bool
 	Revision                         int64
 	DesiredEnabled                   bool
 	AccessState, AccessError         string

@@ -13,7 +13,7 @@ type sqliteStore struct{ db *sql.DB }
 // New composes the local SQLite adapter. Schema installation belongs to application startup.
 func New(db *sql.DB) *Manager { return &Manager{store: &sqliteStore{db: db}} }
 func (s *sqliteStore) list(ctx context.Context, actor Actor) ([]Record, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.owner_id,m.name,u.login,m.enabled,m.last_seen,m.mode,EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id),COALESCE((SELECT error FROM machine_deletions d WHERE d.machine_id=m.id),''),m.access_revision,m.desired_enabled,m.access_state,m.access_error FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.owner_id=? OR ? ORDER BY m.id`, actor.ID, actor.Admin)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.owner_id,m.name,u.login,m.enabled,m.last_seen,m.mode,EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id),COALESCE((SELECT error FROM machine_deletions d WHERE d.machine_id=m.id),''),m.access_revision,m.desired_enabled,m.access_state,m.access_error,m.public_key IS NOT NULL FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.owner_id=? OR ? ORDER BY m.id`, actor.ID, actor.Admin)
 	if err != nil {
 		return nil, err
 	}
@@ -22,7 +22,7 @@ func (s *sqliteStore) list(ctx context.Context, actor Actor) ([]Record, error) {
 	for rows.Next() {
 		var r Record
 		var last sql.NullInt64
-		if err = rows.Scan(&r.ID, &r.OwnerID, &r.Name, &r.Owner, &r.Enabled, &last, &r.Mode, &r.DeletionPending, &r.DeleteError, &r.Revision, &r.DesiredEnabled, &r.AccessState, &r.AccessError); err != nil {
+		if err = rows.Scan(&r.ID, &r.OwnerID, &r.Name, &r.Owner, &r.Enabled, &last, &r.Mode, &r.DeletionPending, &r.DeleteError, &r.Revision, &r.DesiredEnabled, &r.AccessState, &r.AccessError, &r.Enrolled); err != nil {
 			return nil, err
 		}
 		if last.Valid {
