@@ -20,6 +20,7 @@ type browser struct {
 	handler http.Handler
 	cookies map[string]*http.Cookie
 	csrf    string
+	origin  string
 }
 
 func (b *browser) request(method, path string, values url.Values) *httptest.ResponseRecorder {
@@ -30,9 +31,13 @@ func (b *browser) request(method, path string, values url.Values) *httptest.Resp
 	if method == "POST" {
 		values.Set("csrf", b.csrf)
 	}
-	r := httptest.NewRequest(method, origin+path, strings.NewReader(values.Encode()))
+	base := b.origin
+	if base == "" {
+		base = origin
+	}
+	r := httptest.NewRequest(method, base+path, strings.NewReader(values.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	r.Header.Set("Origin", origin)
+	r.Header.Set("Origin", base)
 	for _, c := range b.cookies {
 		r.AddCookie(c)
 	}
