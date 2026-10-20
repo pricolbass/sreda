@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"sreda/internal/agent"
 	"sreda/internal/agentprotocol"
+	"sreda/internal/cabinet"
 	"strings"
 	"sync"
 	"testing"
@@ -212,8 +213,8 @@ func (w *blockedHTTPWriter) SetWriteDeadline(time.Time) error {
 	return errors.New("downstream cannot confirm deadline")
 }
 
-func TestUnconfirmedStreamClosureRemainsErrorAndCanBeRetried(t *testing.T) {
-	app, b, _ := setup(t)
+func TestUnconfirmedStreamClosureRemainsErrorAndResumesAfterRestart(t *testing.T) {
+	app, b, dir := setup(t)
 	app.SetGateway(testGateway{})
 	if err := app.ConfigurePublicationZone("example.test"); err != nil {
 		t.Fatal(err)
@@ -321,6 +322,20 @@ func TestUnconfirmedStreamClosureRemainsErrorAndCanBeRetried(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("downstream did not release")
+	}
+	app.Close()
+	reopened, err := cabinet.Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reopened.SetGateway(testGateway{})
+	b.handler = reopened.Handler()
+	if err := reopened.ReconcileMachinePeers(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := publicationDetail(t, b, p.ID); got.State != "Отключена" {
+		t.Fatalf("pending disable not resumed: %+v", got)
 	}
 	if response := b.request("POST", "/publications/"+p.ID+"/disable", url.Values{"revision": {"1"}}); response.Code != 303 {
 		t.Fatalf("cleanup retry: %d %s", response.Code, response.Body.String())

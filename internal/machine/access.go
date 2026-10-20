@@ -93,6 +93,10 @@ func (m *Manager) reconcileConnectionOperations(ctx context.Context) error {
 	}
 	var failures []error
 	for _, op := range operations {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
 		if err = m.cleanupConnectionOperation(ctx, op); err != nil {
 			failures = append(failures, err)
 		}

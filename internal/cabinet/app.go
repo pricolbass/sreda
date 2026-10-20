@@ -37,7 +37,14 @@ type App struct {
 
 // Open creates the state directory and schema on first use. The origin is saved
 // with the database; later invocations may omit it, but cannot silently change it.
-func Open(dataDir, origin string) (*App, error) {
+type Options struct {
+	// Now supplies the external clock for control-contact freshness observations.
+	// Authentication expiration and workflow leases always use the system clock.
+	Now func() time.Time
+}
+
+func Open(dataDir, origin string) (*App, error) { return OpenWithOptions(dataDir, origin, Options{}) }
+func OpenWithOptions(dataDir, origin string, options Options) (*App, error) {
 	if dataDir == "" {
 		return nil, errors.New("укажите --data-dir")
 	}
@@ -72,12 +79,12 @@ func Open(dataDir, origin string) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	app.publications, err = publication.New(db, app.host, publication.ModeTransports{machine.AgentMode: publication.AgentTransport{}, machine.ManualMode: publication.ManualTransport{}})
+	app.publications, err = publication.New(db, app.host, publication.ModeTransports{machine.AgentMode: publication.AgentTransport{}, machine.ManualMode: publication.ManualTransport{}}, options.Now)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	app.machines = machine.New(db)
+	app.machines = machine.New(db, options.Now)
 	app.publications.SetContactObserver(app.machines)
 	app.agentControl = agentcontrol.New(app.machines, app.publications)
 	app.access = access.New(app.identity, app.publications, app.machines)
@@ -99,7 +106,7 @@ func (a *App) initialize(origin string) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version > 4 {
+	if version > 6 {
 		return errors.New("версия базы новее приложения")
 	}
 	if version == 0 {
@@ -138,6 +145,9 @@ func (a *App) initialize(origin string) error {
 			return err
 		}
 	}
+	if err := identity.InstallClosureSchema(tx); err != nil {
+		return err
+	}
 	if err := installMachineSchema(tx); err != nil {
 		return err
 	}
@@ -162,6 +172,9 @@ func (a *App) initialize(origin string) error {
 		return errors.New("при первом запуске задайте --origin в виде https://cabinet.example.com")
 	}
 	if _, err := tx.Exec("INSERT OR IGNORE INTO settings (key, value) VALUES ('origin', ?)", origin); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("PRAGMA user_version=6"); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

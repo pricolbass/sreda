@@ -5,14 +5,18 @@ import (
 	"database/sql"
 	"errors"
 	"sreda/internal/agentprotocol"
-	"sreda/internal/tunnel"
 	"time"
 )
 
 type sqliteStore struct{ db *sql.DB }
 
 // New composes the local SQLite adapter. Schema installation belongs to application startup.
-func New(db *sql.DB) *Manager { return &Manager{store: &sqliteStore{db: db}} }
+func New(db *sql.DB, now func() time.Time) *Manager {
+	if now == nil {
+		now = time.Now
+	}
+	return &Manager{store: &sqliteStore{db: db}, now: now}
+}
 func (s *sqliteStore) list(ctx context.Context, actor Actor) ([]Record, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.owner_id,m.name,u.login,m.enabled,m.last_seen,m.mode,EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id),COALESCE((SELECT error FROM machine_deletions d WHERE d.machine_id=m.id),''),m.access_revision,m.desired_enabled,m.access_state,m.access_error,m.public_key IS NOT NULL FROM machines m JOIN users u ON u.id=m.owner_id WHERE m.owner_id=? OR ? ORDER BY m.id`, actor.ID, actor.Admin)
 	if err != nil {
@@ -68,20 +72,4 @@ func (s *sqliteStore) observe(ctx context.Context, identity agentprotocol.Connec
 		return failure(Unauthorized, "Подключение отключено или отозвано")
 	}
 	return err
-}
-func (s *sqliteStore) enabledPeers(ctx context.Context) ([]tunnel.Peer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,public_key,tunnel_address FROM machines WHERE desired_enabled=1 AND public_key IS NOT NULL AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=0)`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	peers := []tunnel.Peer{}
-	for rows.Next() {
-		var p tunnel.Peer
-		if err = rows.Scan(&p.MachineID, &p.PublicKey, &p.Address); err != nil {
-			return nil, err
-		}
-		peers = append(peers, p)
-	}
-	return peers, rows.Err()
 }

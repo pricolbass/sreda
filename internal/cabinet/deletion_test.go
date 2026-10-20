@@ -143,8 +143,8 @@ func TestMachineDeletionKeepsReservationAndRevokesCredentialsOnKernelFailure(t *
 	}
 }
 
-func TestPublicationDeletionTimeoutReservesNameUntilBothAgentAndGatewayAreClosed(t *testing.T) {
-	app, b, _ := setup(t)
+func TestPublicationDeletionTimeoutResumesAfterRestartAndBothAgentAndGatewayAreClosed(t *testing.T) {
+	app, b, dir := setup(t)
 	app.SetGateway(testGateway{})
 	app.ConfigurePublicationZone("example.test")
 	b.login()
@@ -221,8 +221,19 @@ func TestPublicationDeletionTimeoutReservesNameUntilBothAgentAndGatewayAreClosed
 	case <-time.After(2 * time.Second):
 		t.Fatal("blocked response did not finish")
 	}
-	if w := b.request("POST", "/publications/"+p.ID+"/delete", url.Values{"revision": {"1"}, "confirm_name": {"slow-delete"}}); w.Code != 200 {
-		t.Fatalf("drained retry: %d %s", w.Code, w.Body.String())
+	app.Close()
+	reopened, err := cabinet.Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	reopened.SetGateway(testGateway{})
+	b.handler = reopened.Handler()
+	if err := reopened.ReconcileMachinePeers(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if w := b.request("GET", "/publications/"+p.ID, nil); w.Code != 404 {
+		t.Fatalf("pending deletion not resumed: %d %s", w.Code, w.Body.String())
 	}
 }
 

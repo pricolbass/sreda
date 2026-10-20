@@ -81,6 +81,7 @@ type Manager struct {
 	store    *sqliteStore
 	gateway  tunnel.Gateway
 	contacts sync.Map
+	now      func() time.Time
 }
 
 func (m *Manager) SetGateway(gateway tunnel.Gateway) { m.gateway = gateway }
@@ -112,7 +113,7 @@ func (m *Manager) List(ctx context.Context, actor Actor) ([]Record, error) {
 				return records, readErr
 			}
 		}
-		r.Online = ContactForMode(r.Mode, r.Enabled, r.LastSeen, time.Now())
+		r.Online = ContactForMode(r.Mode, r.Enabled, r.LastSeen, m.now())
 	}
 	return records, err
 }
@@ -184,7 +185,7 @@ func (m *Manager) AuthenticateAgent(ctx context.Context, credential string) (Con
 	return m.store.agent(ctx, hash(credential))
 }
 func (m *Manager) ObserveContact(ctx context.Context, identity agentprotocol.ConnectionIdentity) error {
-	return m.store.observe(ctx, identity, time.Now().Unix())
+	return m.store.observe(ctx, identity, m.now().Unix())
 }
 func (c Connection) Identity() agentprotocol.ConnectionIdentity {
 	return agentprotocol.ConnectionIdentity{MachineID: c.ID, Revision: c.Revision, OwnerRevision: c.OwnerRevision}
@@ -204,6 +205,10 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	}
 	var failures []error
 	for _, intent := range intents {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
 		cleanupCtx, cancel := context.WithTimeout(ctx, enrollmentCleanupTimeout)
 		err := m.cleanupEnrollment(cleanupCtx, intent, enrollmentCleanupTimeout)
 		cancel()
@@ -217,21 +222,20 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	if err := m.reconcileDeletions(ctx); err != nil {
 		failures = append(failures, err)
 	}
-	disabled, err := m.store.disabledPeers(ctx)
-	if err != nil {
-		failures = append(failures, err)
-	}
-	for _, peer := range disabled {
-		if err := m.changeConnection(ctx, peer.MachineID, false, false); err != nil {
-			failures = append(failures, err)
-		}
-	}
-	peers, err := m.store.enabledPeers(ctx)
+	peers, err := m.store.recoveryPeers(ctx)
 	if err != nil {
 		return errors.Join(append(failures, err)...)
 	}
-	for _, peer := range peers {
-		if err := m.changeConnection(ctx, peer.MachineID, true, true); err != nil {
+	for _, candidate := range peers {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
+		if err := m.store.recordRecoveryAttempt(ctx, candidate.peer.MachineID); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if err := m.changeConnection(ctx, candidate.peer.MachineID, candidate.enabled, candidate.enabled); err != nil {
 			failures = append(failures, err)
 		}
 	}

@@ -76,35 +76,31 @@ func serve(dir, origin, socket string, output io.Writer) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	networkDone := make(chan struct{})
-	if !hasNetwork {
-		close(networkDone)
+	reconcileDone := make(chan struct{})
+	defer func() { stop(); <-reconcileDone }()
+	reconcile := func() {
+		operationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		if err := app.ReconcileMachinePeers(operationCtx); err != nil && ctx.Err() == nil {
+			fmt.Fprintln(output, "Восстановление сохранённых изменений не подтверждено; повтор через 30 секунд.")
+		}
 	}
-	defer func() { stop(); <-networkDone }()
-	if hasNetwork {
-		go func() {
-			defer close(networkDone)
-
-			reconcile := func() {
-				operationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-				defer cancel()
-				if err := app.ReconcileMachinePeers(operationCtx); err != nil && ctx.Err() == nil {
-					fmt.Fprintln(output, "Сетевой helper не подтвердил восстановление подключений; повтор через 30 секунд.")
-				}
+	// The listener has been claimed, but published HTTP traffic is accepted only
+	// after the first bounded restoration attempt. Failed work stays persisted.
+	reconcile()
+	go func() {
+		defer close(reconcileDone)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				reconcile()
 			}
-			reconcile()
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					reconcile()
-				}
-			}
-		}()
-	}
+		}
+	}()
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)

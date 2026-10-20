@@ -18,6 +18,10 @@ import (
 // With SREDA_TEST_CADDY set, it validates a real wildcard TLS certificate from
 // a local CA and traverses Caddy -> Unix socket -> the same gateway Handler.
 func caddyClient(t *testing.T, handler http.Handler) (*http.Client, string) {
+	client, url, _ := caddyClientWithRestart(t, handler)
+	return client, url
+}
+func caddyClientWithRestart(t *testing.T, handler http.Handler) (*http.Client, string, func()) {
 	t.Helper()
 	binary := os.Getenv("SREDA_TEST_CADDY")
 	if binary == "" {
@@ -52,15 +56,26 @@ func caddyClient(t *testing.T, handler http.Handler) (*http.Client, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer log.Close()
-	command := exec.Command(binary, "run", "--config", path, "--adapter", "caddyfile")
-	command.Env = append(os.Environ(), "XDG_DATA_HOME="+filepath.Join(dir, "data"), "XDG_CONFIG_HOME="+filepath.Join(dir, "config"))
-	command.Stdout = log
-	command.Stderr = log
-	if err = command.Start(); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { log.Close() })
+	var command *exec.Cmd
+	start := func() {
+		command = exec.Command(binary, "run", "--config", path, "--adapter", "caddyfile")
+		command.Env = append(os.Environ(), "XDG_DATA_HOME="+filepath.Join(dir, "data"), "XDG_CONFIG_HOME="+filepath.Join(dir, "config"))
+		command.Stdout = log
+		command.Stderr = log
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	t.Cleanup(func() { command.Process.Kill(); command.Wait() })
+	stop := func() {
+		if command != nil {
+			command.Process.Kill()
+			command.Wait()
+			command = nil
+		}
+	}
+	start()
+	t.Cleanup(stop)
 	var ca []byte
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -102,5 +117,20 @@ func caddyClient(t *testing.T, handler http.Handler) (*http.Client, string) {
 		t.Fatalf("Caddy TLS probe: %v %s", probeErr, output)
 	}
 
-	return client, "https://application.example.test"
+	return client, "https://application.example.test", func() {
+		transport.CloseIdleConnections()
+		stop()
+		start()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			response, err := client.Get("https://application.example.test/")
+			if err == nil {
+				response.Body.Close()
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		output, _ := os.ReadFile(logPath)
+		t.Fatalf("Caddy did not restore HTTPS after restart: %s", output)
+	}
 }

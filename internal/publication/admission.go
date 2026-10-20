@@ -32,7 +32,7 @@ func (m *Module) resolveAndAdmit(ctx context.Context, label string, abort func()
 	if err != nil {
 		return admittedPublication{}, err
 	}
-	if !connection.Desired || connection.State != "Настроена" || !machine.ContactForMode(connection.Mode, connection.Enabled, time.Unix(connection.LastSeen, 0), time.Now()) {
+	if !connection.Desired || connection.State != "Настроена" || !machine.ContactForMode(connection.Mode, connection.Enabled, time.Unix(connection.LastSeen, 0), m.now()) {
 		return admittedPublication{}, fail(Unavailable, "Сервис временно недоступен")
 	}
 	endpoint, err := m.transport.Endpoint(connection)

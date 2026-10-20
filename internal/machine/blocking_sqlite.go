@@ -2,38 +2,46 @@ package machine
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"sreda/internal/tunnel"
-	"time"
 )
 
-func (s *sqliteStore) disableOwner(ctx context.Context, ownerID int64) ([]tunnel.Peer, error) {
+func (s *sqliteStore) disableOwner(ctx context.Context, ownerID int64) ([]tunnel.Peer, int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer tx.Rollback()
+	var revision int64
+	if err := tx.QueryRowContext(ctx, `SELECT access_revision FROM users WHERE id=? AND blocked=1`, ownerID).Scan(&revision); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, 0, failure(Unauthorized, "Пользователь уже разблокирован")
+		}
+		return nil, 0, err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE machines SET enabled=0,desired_enabled=0,access_revision=access_revision+1,access_state='Отключается',access_error='',last_seen=NULL,code_hash=NULL,code_expires_at=NULL WHERE owner_id=?`, ownerID); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT id,public_key,tunnel_address FROM machines WHERE owner_id=? AND public_key IS NOT NULL`, ownerID)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var out []tunnel.Peer
 	for rows.Next() {
 		var p tunnel.Peer
 		if err := rows.Scan(&p.MachineID, &p.PublicKey, &p.Address); err != nil {
 			rows.Close()
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, p)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return out, tx.Commit()
+	return out, revision, tx.Commit()
 }
 
 func (s *sqliteStore) ownerEnrollmentCleanup(ctx context.Context, ownerID int64, leaseOwner string, now, until int64) ([]enrollmentIntent, error) {
@@ -126,27 +134,11 @@ func (s *sqliteStore) ownerConnectionCleanup(ctx context.Context, ownerID int64,
 	}
 	return ops, nil
 }
-func (s *sqliteStore) finishOwnerClosure(ctx context.Context, ownerID int64, problem string) error {
+func (s *sqliteStore) finishOwnerClosure(ctx context.Context, ownerID, ownerRevision int64, problem string) error {
 	state := "Отключено"
 	if problem != "" {
 		state = "Ошибка отключения"
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE machines SET access_state=?,access_error=? WHERE owner_id=? AND desired_enabled=0`, state, problem, ownerID)
+	_, err := s.db.ExecContext(ctx, `UPDATE machines SET access_state=?,access_error=? WHERE owner_id=? AND desired_enabled=0 AND EXISTS(SELECT 1 FROM users u WHERE u.id=machines.owner_id AND u.blocked=1 AND u.access_revision=?)`, state, problem, ownerID, ownerRevision)
 	return err
-}
-func (s *sqliteStore) disabledPeers(ctx context.Context) ([]tunnel.Peer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.public_key,m.tunnel_address FROM machines m JOIN users u ON u.id=m.owner_id WHERE (m.desired_enabled=0 OR u.blocked=1) AND m.public_key IS NOT NULL AND NOT EXISTS(SELECT 1 FROM machine_connection_ops o WHERE o.machine_id=m.id AND o.lease_until>?) AND NOT EXISTS(SELECT 1 FROM machine_deletions d WHERE d.machine_id=m.id) ORDER BY m.id`, time.Now().Unix())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var peers []tunnel.Peer
-	for rows.Next() {
-		var p tunnel.Peer
-		if err := rows.Scan(&p.MachineID, &p.PublicKey, &p.Address); err != nil {
-			return nil, err
-		}
-		peers = append(peers, p)
-	}
-	return peers, rows.Err()
 }
