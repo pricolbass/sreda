@@ -104,6 +104,13 @@ func TestSetupPromptManualParametersAndSelectionStayWithResourceOwner(t *testing
 			t.Fatalf("admin can obtain another owner's setup context: %d", foreign.Code)
 		}
 	}
+	admin.request("GET", "/machines", nil)
+	if response := admin.request("POST", "/machines", url.Values{"name": {"Admin only"}}); response.Code != 201 {
+		t.Fatal(response.Code)
+	}
+	if response := person.request("GET", "/machines/2/setup-prompt", nil); response.Code != 404 {
+		t.Fatalf("ordinary user received foreign context: %d", response.Code)
+	}
 	if foreign := admin.request("GET", "/machines/1/setup-prompt", nil); foreign.Code != 404 {
 		t.Fatal(foreign.Code)
 	}
